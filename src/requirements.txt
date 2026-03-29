@@ -3,13 +3,7 @@ flask>=3.0
 
 # Image processing
 pillow>=10.0
-pillow-heif>=0.18.0  # AVIF/HEIC support (bundles libheif, no system dep needed)
-
-# OCR
-pytesseract>=0.3.13
-# tesseract-ocr must also be installed at the OS level:
-#   Ubuntu/Debian: sudo apt install tesseract-ocr
-#   macOS:         brew install tesseract
+pillow-heif>=0.21.0  # AVIF/HEIC support; >=0.21 required for tiled AVIF (common in large images)
 
 # Deep-learning backend
 # NOTE: In Docker these are installed separately via the PyTorch index URL
@@ -18,6 +12,10 @@ pytesseract>=0.3.13
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 torch>=2.0
 torchvision>=0.15
+
+# RAM++ (recognize-anything) dependencies not pulled in automatically
+scipy
+fairscale==0.4.4
 
 # Florence-2 and SigLIP
 # Upper bound: Florence-2's remote config code accesses forced_bos_token_id

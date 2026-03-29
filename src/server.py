@@ -1,9 +1,7 @@
 """
 Image Analysis Server
-- Uses Florence-2 for image tagging
-- Uses SigLIP as a second tagging pass, results merged with Florence-2
-- Uses Tesseract OCR for text extraction (multi-PSM)
-- Runs tagging and OCR concurrently per request
+- Uses Florence-2 for image tagging (OD), description, and OCR
+- Uses RAM++ and SigLIP as additional tagging passes, results merged
 - Request queue with configurable max concurrency to prevent OOM
 - Exposes POST /analyse and GET /health
 """
@@ -18,13 +16,14 @@ import warnings
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 
-import numpy as np
-import pytesseract
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image
 try:
-    from pillow_heif import register_heif_opener
+    from pillow_heif import register_heif_opener, open_heif as _heif_open
     register_heif_opener()
+    _HEIF_AVAILABLE = True
 except ImportError:
+    _HEIF_AVAILABLE = False
+    _heif_open = None
     logging.warning("pillow-heif not installed — AVIF/HEIC images will not be supported")
 from flask import Flask, request, jsonify
 
@@ -48,6 +47,20 @@ except ImportError as e:
         f"    Fix: {sys.executable} -m pip install 'transformers>=4.40'"
     )
 
+try:
+    from ram.models import ram_plus
+    from ram import get_transform as ram_get_transform
+    from ram import inference_ram
+    _RAM_AVAILABLE = True
+except Exception as _ram_import_err:
+    _RAM_AVAILABLE = False
+    logging.warning(
+        "recognize-anything unavailable — RAM++ tags will be disabled.\n"
+        "Import error: %s",
+        _ram_import_err,
+        exc_info=True,
+    )
+
 if _import_errors:
     logging.warning(
         "Some models will be unavailable. Failed imports:\n%s\n"
@@ -59,12 +72,28 @@ if _import_errors:
 
 MODELS_AVAILABLE = len(_import_errors) == 0
 
+def _open_image(data: bytes) -> Image.Image:
+    """
+    Open image bytes via PIL. Falls back to open_heif() directly for AVIF/HEIC
+    files whose ftyp brand PIL's auto-detection rejects but libheif can decode.
+    """
+    try:
+        return Image.open(io.BytesIO(data))
+    except Exception:
+        if _HEIF_AVAILABLE:
+            heif = _heif_open(io.BytesIO(data))
+            return heif[0].to_pillow()
+        raise
+
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 FLORENCE_MODEL       = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 SIGLIP_MODEL_ID      = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
+RAM_CHECKPOINT       = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
+RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 
 try:
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -75,14 +104,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 
 # ── Concurrency limiter ────────────────────────────────────────────────────────
 # Caps how many requests run inference simultaneously. Callers that exceed the
 # limit get a 429 immediately rather than queueing and silently exhausting RAM.
 _concurrency_sem = threading.Semaphore(MAX_CONCURRENCY)
 
-# ── Thread pool: tagging and OCR run concurrently per request ──────────────────
-_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 2, thread_name_prefix="inference")
+# ── Thread pool: inference runs off the Flask request thread ──────────────────
+_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 3, thread_name_prefix="inference")
 
 # ── Florence-2 ─────────────────────────────────────────────────────────────────
 florence_model     = None
@@ -103,31 +133,92 @@ def load_florence_model() -> None:
     logger.info("Florence-2 model loaded.")
 
 
-def get_florence_tags(pil_image: Image.Image) -> list[str]:
-    if florence_model is None or florence_processor is None:
-        logger.warning("Florence-2 model not loaded; returning empty tags.")
-        return []
-    try:
-        task   = "<GENERATE_TAGS>"
-        inputs = florence_processor(text=task, images=pil_image, return_tensors="pt")
-        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-        with torch.no_grad():
-            generated_ids = florence_model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                max_new_tokens=1024,
-                num_beams=3,
-                do_sample=False,
-            )
-        generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed         = florence_processor.post_process_generation(
-            generated_text, task=task, image_size=(pil_image.width, pil_image.height),
+def _florence_generate(pil_image: Image.Image, task: str) -> str:
+    """Run one Florence-2 task and return the post-processed text, special tokens stripped."""
+    inputs = florence_processor(text=task, images=pil_image, return_tensors="pt")
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    with torch.no_grad():
+        generated_ids = florence_model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=1024,
+            num_beams=3,
+            do_sample=False,
         )
-        tags_str = parsed.get(task, "")
-        return [t.strip() for t in tags_str.split(",") if t.strip()]
+    generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+    parsed = florence_processor.post_process_generation(
+        generated_text, task=task, image_size=(pil_image.width, pil_image.height),
+    )
+    raw = parsed.get(task, "")
+    # post_process_generation sometimes leaves Florence-2 special tokens
+    # (e.g. <poly>, <loc_N>) in the output for tasks it doesn't fully handle.
+    # A first pass removes complete <token> patterns; a second pass removes
+    # any orphaned < or > characters left behind (e.g. "GENERATE_TAGS>").
+    cleaned = re.sub(r"<[^>]*>", "", raw)
+    return re.sub(r"[<>]", "", cleaned).strip()
+
+
+def _florence_run_od(pil_image: Image.Image) -> list[str]:
+    """Return deduplicated object labels from Florence-2 <OD>."""
+    inputs = florence_processor(text="<OD>", images=pil_image, return_tensors="pt")
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    with torch.no_grad():
+        generated_ids = florence_model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=1024,
+            num_beams=3,
+            do_sample=False,
+        )
+    generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+    parsed = florence_processor.post_process_generation(
+        generated_text, task="<OD>", image_size=(pil_image.width, pil_image.height),
+    )
+    labels = parsed.get("<OD>", {}).get("labels", [])
+    seen: set[str] = set()
+    tags: list[str] = []
+    for label in labels:
+        if label.lower() not in seen:
+            seen.add(label.lower())
+            tags.append(label)
+    return tags
+
+
+def get_florence_results(pil_image: Image.Image) -> tuple[list[str], str, str]:
+    """
+    Run all Florence-2 tasks sequentially in one thread (safe for shared model).
+    Returns (tags, description, ocr_text).
+    """
+    if florence_model is None or florence_processor is None:
+        logger.warning("Florence-2 model not loaded.")
+        return [], "", ""
+
+    tags: list[str] = []
+    description = ""
+    ocr_text = ""
+
+    try:
+        tags = _florence_run_od(pil_image)
     except Exception:
-        logger.error("Florence-2 inference failed:\n%s", traceback.format_exc())
-        return []
+        logger.error("Florence-2 <OD> failed:\n%s", traceback.format_exc())
+
+    try:
+        raw_description = re.sub(r"\s+", " ", _florence_generate(pil_image, "<MORE_DETAILED_CAPTION>")).strip()
+        description = re.sub(
+            r"^The image \w+\s+(.)",
+            lambda m: m.group(1).upper(),
+            raw_description,
+        )
+    except Exception:
+        logger.error("Florence-2 <MORE_DETAILED_CAPTION> failed:\n%s", traceback.format_exc())
+
+    try:
+        raw_ocr  = _florence_generate(pil_image, "<OCR>")
+        ocr_text = re.sub(r"\s+", " ", raw_ocr.encode("ascii", errors="ignore").decode()).strip()
+    except Exception:
+        logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
+
+    return tags, description, ocr_text
 
 
 # ── SigLIP ─────────────────────────────────────────────────────────────────────
@@ -169,8 +260,7 @@ def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         with torch.no_grad():
             outputs = siglip_model(
                 pixel_values=img_inputs["pixel_values"],
-                input_ids=_siglip_text_inputs["input_ids"],
-                attention_mask=_siglip_text_inputs["attention_mask"],
+                **_siglip_text_inputs,
             )
             # SigLIP uses sigmoid (independent per-tag probabilities), not softmax
             probs = torch.sigmoid(outputs.logits_per_image).squeeze(0).cpu().numpy()
@@ -180,152 +270,36 @@ def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return []
 
 
-def get_tags(pil_image: Image.Image, siglip_threshold: float = 0.0) -> list[str]:
-    """Run Florence-2 and SigLIP, merge results (Florence-2 order first, no duplicates)."""
-    effective_threshold = siglip_threshold if siglip_threshold > 0.0 else SIGLIP_TAG_THRESHOLD
-    florence_tags = get_florence_tags(pil_image)
-    siglip_tags   = get_siglip_tags(pil_image, effective_threshold)
-    seen          = {t.lower() for t in florence_tags}
-    merged        = list(florence_tags)
-    for tag in siglip_tags:
-        if tag.lower() not in seen:
-            merged.append(tag)
-            seen.add(tag.lower())
-    return merged
+# ── RAM++ ──────────────────────────────────────────────────────────────────────
+ram_model      = None
+_ram_transform = None
 
 
-# ── OCR ────────────────────────────────────────────────────────────────────────
-
-# Tesseract PSM modes tried in order. The pass with the highest mean word
-# confidence across words-with-text wins.
-_PSM_MODES = [3, 6, 11]
-
-# A PSM pass whose overall mean confidence falls below this is discarded
-# entirely — its output is noise from a confused Tesseract run.
-_MIN_VIABLE_CONF = 50.0
-
-
-def _is_dark_background(grey: np.ndarray) -> bool:
-    # Use 85 rather than 127 — midtone images (mean ~125) are not genuinely
-    # dark-background and should not be inverted.
-    return float(grey.mean()) < 85
+def load_ram_model() -> None:
+    global ram_model, _ram_transform
+    if not _RAM_AVAILABLE or not MODELS_AVAILABLE:
+        return
+    if not os.path.exists(RAM_CHECKPOINT):
+        logger.warning("RAM++ checkpoint not found at %s — skipping.", RAM_CHECKPOINT)
+        return
+    logger.info("Loading RAM++ model from %s on %s ...", RAM_CHECKPOINT, DEVICE)
+    _ram_transform = ram_get_transform(image_size=384)
+    ram_model = ram_plus(pretrained=RAM_CHECKPOINT, image_size=384, vit="swin_l")
+    ram_model.eval()
+    ram_model = ram_model.to(DEVICE)
+    logger.info("RAM++ model loaded.")
 
 
-def preprocess_for_ocr(pil_image: Image.Image) -> Image.Image:
-    """
-    Prepare an image for Tesseract:
-      1. Convert to greyscale; upscale if shorter than 1000px.
-      2. Invert if the background is dark (e.g. dark-mode UI).
-      3. Quick confidence probe — if Tesseract is already happy (≥70),
-         return the greyscale image as-is.
-      4. Otherwise apply adaptive threshold to clean up noisy photos.
-    """
-    grey = pil_image.convert("L")
-
-    w, h = grey.size
-    if max(w, h) < 1000:
-        scale = 1000 / max(w, h)
-        grey  = grey.resize((int(w * scale), int(h * scale)), Image.BICUBIC)
-
-    if _is_dark_background(np.array(grey)):
-        logger.debug("OCR: inverting dark background")
-        grey = ImageOps.invert(grey)
-
-    probe     = pytesseract.image_to_data(
-        grey,
-        output_type=pytesseract.Output.DICT,
-        config="--oem 3 --psm 3",
-    )
-    valid_c   = [c for c in probe["conf"] if c > 0]
-    mean_conf = sum(valid_c) / len(valid_c) if valid_c else 0.0
-
-    if mean_conf >= 70:
-        logger.debug("OCR: greyscale sufficient (conf %.1f)", mean_conf)
-        return grey
-
-    logger.debug("OCR: applying adaptive threshold (conf %.1f)", mean_conf)
-    grey_arr  = np.array(grey)
-    blurred   = np.array(grey.filter(ImageFilter.GaussianBlur(radius=15)))
-    processed = ((grey_arr.astype(np.int16) - blurred.astype(np.int16) + 15) > 0).astype(np.uint8) * 255
-    return Image.fromarray(processed)
-
-
-def _ocr_image(image: Image.Image, min_confidence: int, config: str) -> tuple[list[str], float]:
-    """
-    Run one Tesseract pass.
-
-    Returns (confident_words, mean_confidence) where mean_confidence is computed
-    only over rows that contain actual text — Tesseract sometimes returns a
-    single empty-string word with high confidence (e.g. 95) when it finds
-    nothing, which would otherwise win the PSM competition unfairly.
-    """
-    data      = pytesseract.image_to_data(
-        image, output_type=pytesseract.Output.DICT, config=config,
-    )
-    texts     = [str(t) for t in data["text"]]
-    confs     = data["conf"]
-    valid_confs = [c for t, c in zip(texts, confs) if t.strip() and c > 0]
-    mean_conf   = sum(valid_confs) / len(valid_confs) if valid_confs else 0.0
-    confident   = [t.strip() for t, c in zip(texts, confs) if t.strip() and c >= min_confidence]
-    return confident, mean_conf
-
-
-
-def _normalise(text: str) -> str:
-    """
-    Lowercase and strip punctuation for search, while preserving:
-      - Decimal numbers  e.g. 4.68
-      - Times            e.g. 1:23
-      - Domain names     e.g. example.com
-      - Contractions     e.g. don't
-    """
-    text = text.lower()
-    text = text.replace("\u2019", "'").replace("\u2018", "'")
-    text = re.sub(r"(?<=[0-9])\.(?=[0-9])",   "decpoint",  text)
-    text = re.sub(r"(?<=[0-9]):(?=[0-9])",    "timecolon", text)
-    text = re.sub(r"(?<=[a-z]{2})\.(?=[a-z]{2})", "dotdot", text)
-    text = re.sub(r"[^a-z0-9 ']", "", text)
-    text = text.replace("decpoint", ".").replace("timecolon", ":").replace("dotdot", ".")
-    text = re.sub(r"(?<![a-z])'|'(?![a-z])", "", text)
-    return re.sub(r" +", " ", text).strip()
-
-
-def _looks_real(token: str) -> bool:
-    """Return True if a token has enough alphanumeric content to be real text."""
-    alnum = sum(c.isalnum() for c in token)
-    return len(token) >= 2 and (alnum / len(token)) >= 0.4
-
-
-def get_ocr_text(pil_image: Image.Image, min_confidence: int = 60) -> str:
-    """
-    Multi-PSM, multi-language OCR.
-
-    Runs PSM 3 / 6 / 11 on the preprocessed image, picks the pass with the
-    highest mean word confidence (above _MIN_VIABLE_CONF), then filters and
-    normalises. Language is auto-detected via Tesseract OSD.
-    """
+def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
+    if ram_model is None or _ram_transform is None:
+        return []
     try:
-        preprocessed = preprocess_for_ocr(pil_image)
-        best_words: list[str] = []
-        best_conf             = -1.0
-
-        for psm in _PSM_MODES:
-            words, mean_conf = _ocr_image(
-                preprocessed, min_confidence, f"--oem 3 --psm {psm} -l eng",
-            )
-            logger.debug("PSM %d -> %d words, conf %.1f", psm, len(words), mean_conf)
-            if mean_conf > best_conf and mean_conf >= _MIN_VIABLE_CONF:
-                best_conf  = mean_conf
-                best_words = words
-
-        if not best_words:
-            return ""
-
-        return _normalise(" ".join(w for w in best_words if _looks_real(w)))
-
+        image_tensor = _ram_transform(pil_image).unsqueeze(0).to(DEVICE)
+        tags_str, _ = inference_ram(image_tensor, ram_model)
+        return [t.strip() for t in tags_str.split("|") if t.strip()]
     except Exception:
-        logger.error("Tesseract OCR failed:\n%s", traceback.format_exc())
-        return ""
+        logger.error("RAM++ inference failed:\n%s", traceback.format_exc())
+        return []
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -336,6 +310,7 @@ def health():
         "status":                 "ok",
         "florence_model_loaded":  florence_model is not None,
         "siglip_model_loaded":    siglip_model is not None,
+        "ram_model_loaded":       ram_model is not None,
         "device":                 DEVICE,
         "max_concurrency":        MAX_CONCURRENCY,
     })
@@ -350,22 +325,47 @@ def analyse():
       tag_confidence  float 0-1  minimum SigLIP confidence for secondary tags
                                  (default: SIGLIP_TAG_THRESHOLD env var, default 0.1)
 
+    Returns 503 if any model has not finished loading.
     Returns 429 if MAX_CONCURRENCY active requests are already running.
     """
-    try:
-        tag_confidence = float(request.args.get("tag_confidence", 0.0))
-    except ValueError:
-        return jsonify({"error": "tag_confidence must be a float between 0 and 1"}), 400
+    not_loaded = [
+        name for name, loaded in [
+            ("Florence-2", florence_model is not None),
+            ("SigLIP",     siglip_model is not None),
+            ("RAM++",      ram_model is not None),
+        ] if not loaded
+    ]
+    if not_loaded:
+        return jsonify({
+            "error":      "Service unavailable — models not yet loaded.",
+            "not_loaded": not_loaded,
+        }), 503
+
+    tag_confidence_str = request.args.get("tag_confidence")
+    if tag_confidence_str is not None:
+        try:
+            tag_confidence = float(tag_confidence_str)
+        except ValueError:
+            return jsonify({"error": "tag_confidence must be a float between 0 and 1"}), 400
+        if not 0.0 <= tag_confidence <= 1.0:
+            return jsonify({"error": "tag_confidence must be between 0 and 1"}), 400
+        siglip_threshold = tag_confidence
+        ram_threshold    = tag_confidence
+    else:
+        siglip_threshold = SIGLIP_TAG_THRESHOLD
+        ram_threshold    = RAM_TAG_THRESHOLD
 
     # ── Decode image ──────────────────────────────────────────────────────────
     if request.files and "image" in request.files:
         try:
-            pil_image = Image.open(io.BytesIO(request.files["image"].stream.read()))
+            stream = request.files["image"].stream
+            stream.seek(0)
+            pil_image = _open_image(stream.read())
         except Exception as e:
             return jsonify({"error": f"Could not decode uploaded file: {e}"}), 400
     elif request.data:
         try:
-            pil_image = Image.open(io.BytesIO(request.data))
+            pil_image = _open_image(request.data)
         except Exception as e:
             return jsonify({"error": f"Could not decode raw image body: {e}"}), 400
     else:
@@ -387,13 +387,23 @@ def analyse():
         }), 429
 
     try:
-        future_tags = _inference_pool.submit(get_tags, pil_image, tag_confidence)
-        future_text = _inference_pool.submit(get_ocr_text, pil_image)
-        wait([future_tags, future_text])
+        future_florence = _inference_pool.submit(get_florence_results, pil_image)
+        future_siglip   = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
+        future_ram      = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
+        wait([future_florence, future_siglip, future_ram])
+
+        florence_tags, florence_description, florence_text = future_florence.result()
+        tags = florence_tags
+        seen = {t.lower() for t in tags}
+        for tag in [*future_siglip.result(), *future_ram.result()]:
+            if tag.lower() not in seen:
+                tags.append(tag)
+                seen.add(tag.lower())
 
         return jsonify({
-            "tags": future_tags.result(),
-            "text": future_text.result(),
+            "tags":        tags,
+            "description": florence_description,
+            "text":        florence_text,
         })
 
     finally:
@@ -403,6 +413,7 @@ def analyse():
 # ── Load models on import ──────────────────────────────────────────────────────
 load_florence_model()
 load_siglip_model()
+load_ram_model()
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":

@@ -3,8 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "9100:9100"
+    network_mode: host
     environment:
       - PORT=9100
       - RAM_CHECKPOINT=/app/ram_plus_swin_large_14m.pth
