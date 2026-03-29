@@ -86,6 +86,16 @@ def _open_image(data: bytes) -> Image.Image:
         raise
 
 
+def _compile(model):
+    """Attempt torch.compile(); silently skip if unavailable (PyTorch < 2.0)."""
+    try:
+        return torch.compile(model)
+    except Exception as e:
+        # logger may not be initialised yet at module load time
+        logging.warning("torch.compile() unavailable, running uncompiled: %s", e)
+        return model
+
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 FLORENCE_MODEL       = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 SIGLIP_MODEL_ID      = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
@@ -112,37 +122,51 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 _concurrency_sem = threading.Semaphore(MAX_CONCURRENCY)
 
 # ── Thread pool: inference runs off the Flask request thread ──────────────────
-_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 3, thread_name_prefix="inference")
+# 5 tasks per request: OD, caption, OCR (3× Florence-2) + SigLIP + RAM++
+_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 5, thread_name_prefix="inference")
 
 # ── Florence-2 ─────────────────────────────────────────────────────────────────
-florence_model     = None
-florence_processor = None
+# Three independent model instances so OD, caption, and OCR run in parallel.
+florence_processor  = None
+florence_model_od   = None  # <OD> — object detection tags
+florence_model_cap  = None  # <MORE_DETAILED_CAPTION> — description
+florence_model_ocr  = None  # <OCR> — text extraction
 
 
 def load_florence_model() -> None:
-    global florence_model, florence_processor
+    global florence_processor, florence_model_od, florence_model_cap, florence_model_ocr
     if not MODELS_AVAILABLE:
         return
     logger.info("Loading Florence-2 model (%s) on %s ...", FLORENCE_MODEL, DEVICE)
     florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL, trust_remote_code=True)
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    florence_model = AutoModelForCausalLM.from_pretrained(
-        FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-    ).to(DEVICE)
-    florence_model.eval()
-    logger.info("Florence-2 model loaded.")
+    florence_model_od = AutoModelForCausalLM.from_pretrained(
+                             FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                         ).to(DEVICE)
+    florence_model_cap = AutoModelForCausalLM.from_pretrained(
+                              FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                          ).to(DEVICE)
+    florence_model_ocr = AutoModelForCausalLM.from_pretrained(
+                              FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                          ).to(DEVICE)
+    florence_model_od.eval()
+    logger.info("Florence-2 model loaded (OD).")
+    florence_model_cap.eval()
+    logger.info("Florence-2 model loaded (CAP).")
+    florence_model_ocr.eval()
+    logger.info("Florence-2 model loaded (OCR).")
 
 
-def _florence_generate(pil_image: Image.Image, task: str) -> str:
-    """Run one Florence-2 task and return the post-processed text, special tokens stripped."""
+def _florence_generate(model, pil_image: Image.Image, task: str, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
+    """Run one Florence-2 task on the given model instance and return cleaned text."""
     inputs = florence_processor(text=task, images=pil_image, return_tensors="pt")
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
-        generated_ids = florence_model.generate(
+        generated_ids = model.generate(
             input_ids=inputs["input_ids"],
             pixel_values=inputs["pixel_values"],
-            max_new_tokens=1024,
-            num_beams=3,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
             do_sample=False,
         )
     generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
@@ -158,67 +182,72 @@ def _florence_generate(pil_image: Image.Image, task: str) -> str:
     return re.sub(r"[<>]", "", cleaned).strip()
 
 
-def _florence_run_od(pil_image: Image.Image) -> list[str]:
+def get_florence_tags(pil_image: Image.Image) -> list[str]:
     """Return deduplicated object labels from Florence-2 <OD>."""
-    inputs = florence_processor(text="<OD>", images=pil_image, return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.no_grad():
-        generated_ids = florence_model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=inputs["pixel_values"],
-            max_new_tokens=1024,
-            num_beams=3,
-            do_sample=False,
-        )
-    generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-    parsed = florence_processor.post_process_generation(
-        generated_text, task="<OD>", image_size=(pil_image.width, pil_image.height),
-    )
-    labels = parsed.get("<OD>", {}).get("labels", [])
-    seen: set[str] = set()
-    tags: list[str] = []
-    for label in labels:
-        if label.lower() not in seen:
-            seen.add(label.lower())
-            tags.append(label)
-    return tags
-
-
-def get_florence_results(pil_image: Image.Image) -> tuple[list[str], str, str]:
-    """
-    Run all Florence-2 tasks sequentially in one thread (safe for shared model).
-    Returns (tags, description, ocr_text).
-    """
-    if florence_model is None or florence_processor is None:
-        logger.warning("Florence-2 model not loaded.")
-        return [], "", ""
-
-    tags: list[str] = []
-    description = ""
-    ocr_text = ""
-
+    logger.debug("Florence tags started")
+    if florence_model_od is None or florence_processor is None:
+        logger.warning("Florence-2 OD model not loaded.")
+        return []
     try:
-        tags = _florence_run_od(pil_image)
+        inputs = florence_processor(text="<OD>", images=pil_image, return_tensors="pt")
+        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+        with torch.no_grad():
+            generated_ids = florence_model_od.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                do_sample=False,
+            )
+        generated_text = florence_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        parsed = florence_processor.post_process_generation(
+            generated_text, task="<OD>", image_size=(pil_image.width, pil_image.height),
+        )
+        labels = parsed.get("<OD>", {}).get("labels", [])
+        seen: set[str] = set()
+        tags: list[str] = []
+        for label in labels:
+            if label.lower() not in seen:
+                seen.add(label.lower())
+                tags.append(label)
+        logger.debug("Florence tags complete")
+        return tags
     except Exception:
         logger.error("Florence-2 <OD> failed:\n%s", traceback.format_exc())
+        return []
 
+
+def get_florence_description(pil_image: Image.Image) -> str:
+    """Return a cleaned caption from Florence-2 <MORE_DETAILED_CAPTION>."""
+    logger.debug("Florence description started")
+    if florence_model_cap is None or florence_processor is None:
+        logger.warning("Florence-2 caption model not loaded.")
+        return ""
     try:
-        raw_description = re.sub(r"\s+", " ", _florence_generate(pil_image, "<MORE_DETAILED_CAPTION>")).strip()
-        description = re.sub(
+        raw = re.sub(r"\s+", " ", _florence_generate(florence_model_cap, pil_image, "<MORE_DETAILED_CAPTION>")).strip()
+        logger.debug("Florence description complete")
+        return re.sub(
             r"^The image \w+\s+(.)",
             lambda m: m.group(1).upper(),
-            raw_description,
+            raw,
         )
     except Exception:
         logger.error("Florence-2 <MORE_DETAILED_CAPTION> failed:\n%s", traceback.format_exc())
+        return ""
 
+def get_florence_ocr(pil_image: Image.Image) -> str:
+    """Return ASCII-only OCR text from Florence-2 <OCR>."""
+    logger.debug("Florence ocr started")
+    if florence_model_ocr is None or florence_processor is None:
+        logger.warning("Florence-2 OCR model not loaded.")
+        return ""
     try:
-        raw_ocr  = _florence_generate(pil_image, "<OCR>")
-        ocr_text = re.sub(r"\s+", " ", raw_ocr.encode("ascii", errors="ignore").decode()).strip()
+        raw = _florence_generate(florence_model_ocr, pil_image, "<OCR>", max_new_tokens=256, num_beams=1)
+        logger.debug("Florence ocr complete")
+        return re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
     except Exception:
         logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
-
-    return tags, description, ocr_text
+        return ""
 
 
 # ── SigLIP ─────────────────────────────────────────────────────────────────────
@@ -243,6 +272,7 @@ def load_siglip_model() -> None:
     siglip_processor = SiglipProcessor.from_pretrained(SIGLIP_MODEL_ID)
     siglip_model     = SiglipModel.from_pretrained(SIGLIP_MODEL_ID).to(DEVICE)
     siglip_model.eval()
+    siglip_model = _compile(siglip_model)
     with torch.no_grad():
         text_inputs         = siglip_processor(
             text=SIGLIP_CANDIDATE_TAGS, return_tensors="pt", padding="max_length",
@@ -252,6 +282,7 @@ def load_siglip_model() -> None:
 
 
 def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
+    logger.debug("Siglip tags started")
     if siglip_model is None or _siglip_text_inputs is None:
         return []
     try:
@@ -264,6 +295,7 @@ def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
             )
             # SigLIP uses sigmoid (independent per-tag probabilities), not softmax
             probs = torch.sigmoid(outputs.logits_per_image).squeeze(0).cpu().numpy()
+        logger.debug("Siglip tags complete")
         return [tag for tag, p in zip(SIGLIP_CANDIDATE_TAGS, probs) if p >= threshold]
     except Exception:
         logger.error("SigLIP inference failed:\n%s", traceback.format_exc())
@@ -287,15 +319,18 @@ def load_ram_model() -> None:
     ram_model = ram_plus(pretrained=RAM_CHECKPOINT, image_size=384, vit="swin_l")
     ram_model.eval()
     ram_model = ram_model.to(DEVICE)
+    ram_model = _compile(ram_model)
     logger.info("RAM++ model loaded.")
 
 
 def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
+    logger.debug("RAM++ tags started")
     if ram_model is None or _ram_transform is None:
         return []
     try:
         image_tensor = _ram_transform(pil_image).unsqueeze(0).to(DEVICE)
         tags_str, _ = inference_ram(image_tensor, ram_model)
+        logger.debug("RAM++ tags complete")
         return [t.strip() for t in tags_str.split("|") if t.strip()]
     except Exception:
         logger.error("RAM++ inference failed:\n%s", traceback.format_exc())
@@ -308,7 +343,7 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
 def health():
     return jsonify({
         "status":                 "ok",
-        "florence_model_loaded":  florence_model is not None,
+        "florence_model_loaded":  florence_model_od is not None,
         "siglip_model_loaded":    siglip_model is not None,
         "ram_model_loaded":       ram_model is not None,
         "device":                 DEVICE,
@@ -330,7 +365,7 @@ def analyse():
     """
     not_loaded = [
         name for name, loaded in [
-            ("Florence-2", florence_model is not None),
+            ("Florence-2", florence_model_od is not None),
             ("SigLIP",     siglip_model is not None),
             ("RAM++",      ram_model is not None),
         ] if not loaded
@@ -387,13 +422,14 @@ def analyse():
         }), 429
 
     try:
-        future_florence = _inference_pool.submit(get_florence_results, pil_image)
-        future_siglip   = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
-        future_ram      = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
-        wait([future_florence, future_siglip, future_ram])
+        future_od   = _inference_pool.submit(get_florence_tags, pil_image)
+        future_cap  = _inference_pool.submit(get_florence_description, pil_image)
+        future_ocr  = _inference_pool.submit(get_florence_ocr, pil_image)
+        future_siglip = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
+        future_ram    = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
+        wait([future_od, future_cap, future_ocr, future_siglip, future_ram])
 
-        florence_tags, florence_description, florence_text = future_florence.result()
-        tags = florence_tags
+        tags = future_od.result()
         seen = {t.lower() for t in tags}
         for tag in [*future_siglip.result(), *future_ram.result()]:
             if tag.lower() not in seen:
@@ -402,8 +438,8 @@ def analyse():
 
         return jsonify({
             "tags":        tags,
-            "description": florence_description,
-            "text":        florence_text,
+            "description": future_cap.result(),
+            "text":        future_ocr.result(),
         })
 
     finally:
