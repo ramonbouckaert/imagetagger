@@ -1,0 +1,23 @@
+# Model checkpoints
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+*.iml
+.idea/
+.vscode/
+
+# OS
+.DS_Store

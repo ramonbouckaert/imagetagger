@@ -1,0 +1,12 @@
+services:
+  imagetagger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9100:9100"
+    environment:
+      - PORT=9100
+      - RAM_CHECKPOINT=/app/ram_plus_swin_large_14m.pth
+    restart: unless-stopped
+

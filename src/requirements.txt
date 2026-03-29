@@ -1,0 +1,34 @@
+# Core server
+flask>=3.0
+
+# Image processing
+pillow>=10.0
+pillow-heif>=0.18.0  # AVIF/HEIC support (bundles libheif, no system dep needed)
+
+# OCR
+pytesseract>=0.3.13
+# tesseract-ocr must also be installed at the OS level:
+#   Ubuntu/Debian: sudo apt install tesseract-ocr
+#   macOS:         brew install tesseract
+
+# Deep-learning backend
+# NOTE: In Docker these are installed separately via the PyTorch index URL
+# before this file is processed, so they won't be re-fetched from PyPI.
+# When installing locally, run:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0
+torchvision>=0.15
+
+# Florence-2 and SigLIP
+# Upper bound: Florence-2's remote config code accesses forced_bos_token_id
+# before parent __init__ sets it, which breaks on transformers >= 4.47.
+transformers>=4.40,<4.47
+timm
+einops        # required by Florence-2's vision encoder
+sentencepiece # required by SigLIP's tokenizer
+protobuf      # required by SigLIP's tokenizer
+safetensors   # required to load Florence-2 and SigLIP model weights
+accelerate    # used by transformers internals during model loading
+
+# Production server
+gunicorn>=21.0

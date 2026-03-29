@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+*.pth
+venv
+.env
+README.md
+Dockerfile.gpu
