@@ -1,14 +1,18 @@
 # Target: NVIDIA Jetson Orin (JetPack 6 / L4T R36).
-# PyTorch 2.7 with CUDA is pre-installed in this base image — do NOT reinstall
+# PyTorch with CUDA is pre-installed in the base image — do NOT reinstall
 # torch/torchvision from PyPI; the standard wheels target x86 and will not work
 # on aarch64/Jetson.
 #
-# Using dusty-nv's image (Docker Hub, no auth required).
-# Official NVIDIA alternative (requires NGC login): nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.1-py3
-FROM dustynv/pytorch:2.7-r36.4.0
+# BASE_IMAGE is resolved at build time by up.sh via jetson-containers autotag.
+# Fall back to a known-good image if building without the wrapper script.
+ARG BASE_IMAGE=dustynv/pytorch:2.7-r36.4.0
+FROM ${BASE_IMAGE}
 
 # ── APT mirror ────────────────────────────────────────────────────────────────
-RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list
+# Handles both Ubuntu 20.04 (sources.list) and 24.04 (DEB822 .sources format).
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; \
+    sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+    true
 
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     gcc \
     g++ \
-    python3.10-venv \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
