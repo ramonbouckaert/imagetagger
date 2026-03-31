@@ -20,11 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# ── Virtual environment ────────────────────────────────────────────────────────
+# --system-site-packages makes the venv inherit the base image's torch/torchvision
+# so we don't need to reinstall them (PyPI wheels target x86, not aarch64/Jetson).
+# All subsequent pip/python commands resolve to the venv via PATH.
+RUN python3 -m venv /app/venv --system-site-packages
+ENV PATH=/app/venv/bin:$PATH
+
 # ── Model downloads ────────────────────────────────────────────────────────────
 # Install only what's needed to pull models from HuggingFace, before copying
 # requirements.txt — this keeps the large model layers from being invalidated
 # by routine requirements changes.
-# torch/torchvision are already in the base image; install only the rest.
 # Pin transformers to the same range as requirements.txt — Florence-2's config
 # code accesses forced_bos_token_id before parent __init__ sets it on >= 4.47.
 RUN pip install --no-cache-dir "transformers>=4.40,<4.47" huggingface_hub timm einops tqdm
@@ -58,6 +64,7 @@ COPY src/requirements.txt .
 # shipped in Ubuntu 22.04 / L4T R36 — building from source against the system
 # libheif fails because pillow-heif>=0.21 requires libheif>=1.16.
 RUN pip install --no-cache-dir -r requirements.txt
+
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
 RUN pip install --no-cache-dir git+https://github.com/xinyu1205/recognize-anything.git
 
