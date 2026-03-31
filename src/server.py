@@ -446,10 +446,33 @@ def analyse():
         _concurrency_sem.release()
 
 
+# ── Startup device report ──────────────────────────────────────────────────────
+
+def _report_devices() -> None:
+    """After all models load, log the actual device each one is running on."""
+    def _device_of(model) -> str:
+        if model is None:
+            return "not loaded"
+        try:
+            return str(next(model.parameters()).device)
+        except StopIteration:
+            return DEVICE
+
+    logger.info("=" * 56)
+    logger.info("Model device report")
+    logger.info("  Florence-2 OD  : %s", _device_of(florence_model_od))
+    logger.info("  Florence-2 CAP : %s", _device_of(florence_model_cap))
+    logger.info("  Florence-2 OCR : %s", _device_of(florence_model_ocr))
+    logger.info("  SigLIP         : %s", _device_of(siglip_model))
+    logger.info("  RAM++          : %s", _device_of(ram_model))
+    logger.info("=" * 56)
+
+
 # ── Load models on import ──────────────────────────────────────────────────────
 load_florence_model()
 load_siglip_model()
 load_ram_model()
+_report_devices()
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":

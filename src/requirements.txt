@@ -6,12 +6,13 @@ pillow>=10.0
 pillow-heif>=0.21.0  # AVIF/HEIC support; >=0.21 required for tiled AVIF (common in large images)
 
 # Deep-learning backend
-# NOTE: In Docker these are installed separately via the PyTorch index URL
-# before this file is processed, so they won't be re-fetched from PyPI.
-# When installing locally, run:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-torch>=2.0
-torchvision>=0.15
+# In the JetPack/L4T Docker image, torch and torchvision are pre-installed with
+# Jetson CUDA support — do NOT reinstall from PyPI (wrong architecture).
+# For local development outside Docker, install manually:
+#   Jetson: use the wheel bundled with your JetPack SDK
+#   x86 CPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# torch>=2.0
+# torchvision>=0.15
 
 # RAM++ (recognize-anything) dependencies not pulled in automatically
 scipy
