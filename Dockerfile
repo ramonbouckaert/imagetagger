@@ -13,6 +13,7 @@ RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/u
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    wget \
     libgl1 \
     libglib2.0-0 \
     pkg-config \
@@ -24,6 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# ── cuSPARSELt ────────────────────────────────────────────────────────────────
+# Must be installed via .deb before torch, as the wheel depends on the shared libs.
+RUN wget -q https://developer.download.nvidia.com/compute/cusparselt/0.7.0/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb \
+    && dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb \
+    && cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.7.0/cusparselt-*-keyring.gpg /usr/share/keyrings/ \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libcusparselt0 libcusparselt-dev \
+    && rm -rf /var/lib/apt/lists/* cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb
+
 # ── Virtual environment ────────────────────────────────────────────────────────
 RUN python3 -m venv /app/venv
 ENV PATH=/app/venv/bin:$PATH
@@ -33,8 +43,7 @@ ENV PATH=/app/venv/bin:$PATH
 RUN pip install --no-cache-dir \
     --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
     torch==2.10.0 \
-    torchvision==0.25.0 \
-    cusparselt
+    torchvision==0.25.0
 
 # ── Python dependencies ────────────────────────────────────────────────────────
 COPY src/requirements.txt .
