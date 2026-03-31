@@ -1,5 +1,5 @@
 # Target: NVIDIA Jetson Orin (JetPack 6 / L4T R36).
-# PyTorch 2.1 with CUDA is pre-installed in this base image — do NOT reinstall
+# PyTorch 2.7 with CUDA is pre-installed in this base image — do NOT reinstall
 # torch/torchvision from PyPI; the standard wheels target x86 and will not work
 # on aarch64/Jetson.
 #
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     gcc \
     g++ \
-    python3.10-venv \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
