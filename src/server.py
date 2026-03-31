@@ -328,7 +328,8 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
     if ram_model is None or _ram_transform is None:
         return []
     try:
-        image_tensor = _ram_transform(pil_image).unsqueeze(0).to(DEVICE)
+        model_dtype = next(ram_model.parameters()).dtype
+        image_tensor = _ram_transform(pil_image).unsqueeze(0).to(DEVICE, dtype=model_dtype)
         tags_str, _ = inference_ram(image_tensor, ram_model)
         logger.debug("RAM++ tags complete")
         return [t.strip() for t in tags_str.split("|") if t.strip()]
