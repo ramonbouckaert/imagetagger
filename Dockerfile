@@ -5,7 +5,7 @@
 #
 # Using dusty-nv's image (Docker Hub, no auth required).
 # Official NVIDIA alternative (requires NGC login): nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.1-py3
-FROM dustynv/pytorch:2.7-r36.4.0-cu128-24.04
+FROM dustynv/pytorch:2.7-r36.4.0
 
 # ── APT mirror ────────────────────────────────────────────────────────────────
 RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; \
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     gcc \
     g++ \
-    python3-venv \
+    python3.10-venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
