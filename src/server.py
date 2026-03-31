@@ -107,11 +107,9 @@ RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 
 # ── Model enable flags ─────────────────────────────────────────────────────────
 # Set any to False to skip loading and running that model entirely.
-ENABLE_FLORENCE_OD  = True  # Florence-2 <OD>: object-detection tags
-ENABLE_FLORENCE_CAP = True  # Florence-2 <MORE_DETAILED_CAPTION>: image description
-ENABLE_FLORENCE_OCR = True  # Florence-2 <OCR>: text extraction
-ENABLE_SIGLIP       = True  # SigLIP: zero-shot tag classification
-ENABLE_RAM          = True  # RAM++: open-set scene/object tagging
+ENABLE_FLORENCE = True  # Florence-2: OD tags, image description, OCR
+ENABLE_SIGLIP   = True  # SigLIP: zero-shot tag classification
+ENABLE_RAM      = True  # RAM++: open-set scene/object tagging
 
 try:
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -130,52 +128,35 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 _concurrency_sem = threading.Semaphore(MAX_CONCURRENCY)
 
 # ── Thread pool: inference runs off the Flask request thread ──────────────────
-# 5 tasks per request: OD, caption, OCR (3× Florence-2) + SigLIP + RAM++
-_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 5, thread_name_prefix="inference")
+# 3 tasks per request: Florence-2 (OD/CAP/OCR sequentially) + SigLIP + RAM++
+_inference_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY * 3, thread_name_prefix="inference")
 
 # ── Florence-2 ─────────────────────────────────────────────────────────────────
-# Three independent model instances so OD, caption, and OCR run in parallel.
-florence_processor  = None
-florence_model_od   = None  # <OD> — object detection tags
-florence_model_cap  = None  # <MORE_DETAILED_CAPTION> — description
-florence_model_ocr  = None  # <OCR> — text extraction
+florence_processor = None
+florence_model     = None  # single instance; OD/CAP/OCR tasks run sequentially
 
 
 def load_florence_model() -> None:
-    global florence_processor, florence_model_od, florence_model_cap, florence_model_ocr
-    any_florence = ENABLE_FLORENCE_OD or ENABLE_FLORENCE_CAP or ENABLE_FLORENCE_OCR
-    if not MODELS_AVAILABLE or not any_florence:
+    global florence_processor, florence_model
+    if not MODELS_AVAILABLE or not ENABLE_FLORENCE:
         return
     logger.info("Loading Florence-2 model (%s) on %s ...", FLORENCE_MODEL, DEVICE)
     florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL, trust_remote_code=True)
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    if ENABLE_FLORENCE_OD:
-        florence_model_od = AutoModelForCausalLM.from_pretrained(
-                                FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                            ).to(DEVICE)
-        florence_model_od.eval()
-        logger.info("Florence-2 model loaded (OD).")
-    if ENABLE_FLORENCE_CAP:
-        florence_model_cap = AutoModelForCausalLM.from_pretrained(
-                                 FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                             ).to(DEVICE)
-        florence_model_cap.eval()
-        logger.info("Florence-2 model loaded (CAP).")
-    if ENABLE_FLORENCE_OCR:
-        florence_model_ocr = AutoModelForCausalLM.from_pretrained(
-                                 FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                             ).to(DEVICE)
-        florence_model_ocr.eval()
-        logger.info("Florence-2 model loaded (OCR).")
+    florence_model = AutoModelForCausalLM.from_pretrained(
+                         FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                     ).to(DEVICE)
+    florence_model.eval()
+    logger.info("Florence-2 model loaded.")
 
 
-def _florence_generate(model, pil_image: Image.Image, task: str, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
-    """Run one Florence-2 task on the given model instance and return cleaned text."""
+def _florence_generate(task: str, pil_image: Image.Image, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
+    """Run one Florence-2 task on the shared model instance and return cleaned text."""
     inputs = florence_processor(text=task, images=pil_image, return_tensors="pt")
-    model_dtype = next(model.parameters()).dtype
+    model_dtype = next(florence_model.parameters()).dtype
     inputs = {k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
-        generated_ids = model.generate(
+        generated_ids = florence_model.generate(
             input_ids=inputs["input_ids"],
             pixel_values=inputs["pixel_values"],
             max_new_tokens=max_new_tokens,
@@ -197,16 +178,16 @@ def _florence_generate(model, pil_image: Image.Image, task: str, *, max_new_toke
 
 def get_florence_tags(pil_image: Image.Image) -> list[str]:
     """Return deduplicated object labels from Florence-2 <OD>."""
-    logger.debug("Florence tags started")
-    if florence_model_od is None or florence_processor is None:
-        logger.warning("Florence-2 OD model not loaded.")
+    logger.debug("Florence OD started")
+    if florence_model is None or florence_processor is None:
+        logger.warning("Florence-2 model not loaded.")
         return []
     try:
         inputs = florence_processor(text="<OD>", images=pil_image, return_tensors="pt")
-        model_dtype = next(florence_model_od.parameters()).dtype
+        model_dtype = next(florence_model.parameters()).dtype
         inputs = {k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE) for k, v in inputs.items()}
         with torch.no_grad():
-            generated_ids = florence_model_od.generate(
+            generated_ids = florence_model.generate(
                 input_ids=inputs["input_ids"],
                 pixel_values=inputs["pixel_values"],
                 max_new_tokens=1024,
@@ -224,7 +205,7 @@ def get_florence_tags(pil_image: Image.Image) -> list[str]:
             if label.lower() not in seen:
                 seen.add(label.lower())
                 tags.append(label)
-        logger.debug("Florence tags complete")
+        logger.debug("Florence OD complete")
         return tags
     except Exception:
         logger.error("Florence-2 <OD> failed:\n%s", traceback.format_exc())
@@ -233,13 +214,13 @@ def get_florence_tags(pil_image: Image.Image) -> list[str]:
 
 def get_florence_description(pil_image: Image.Image) -> str:
     """Return a cleaned caption from Florence-2 <MORE_DETAILED_CAPTION>."""
-    logger.debug("Florence description started")
-    if florence_model_cap is None or florence_processor is None:
-        logger.warning("Florence-2 caption model not loaded.")
+    logger.debug("Florence CAP started")
+    if florence_model is None or florence_processor is None:
+        logger.warning("Florence-2 model not loaded.")
         return ""
     try:
-        raw = re.sub(r"\s+", " ", _florence_generate(florence_model_cap, pil_image, "<MORE_DETAILED_CAPTION>")).strip()
-        logger.debug("Florence description complete")
+        raw = re.sub(r"\s+", " ", _florence_generate("<MORE_DETAILED_CAPTION>", pil_image)).strip()
+        logger.debug("Florence CAP complete")
         return re.sub(
             r"^The image \w+\s+(.)",
             lambda m: m.group(1).upper(),
@@ -251,17 +232,26 @@ def get_florence_description(pil_image: Image.Image) -> str:
 
 def get_florence_ocr(pil_image: Image.Image) -> str:
     """Return ASCII-only OCR text from Florence-2 <OCR>."""
-    logger.debug("Florence ocr started")
-    if florence_model_ocr is None or florence_processor is None:
-        logger.warning("Florence-2 OCR model not loaded.")
+    logger.debug("Florence OCR started")
+    if florence_model is None or florence_processor is None:
+        logger.warning("Florence-2 model not loaded.")
         return ""
     try:
-        raw = _florence_generate(florence_model_ocr, pil_image, "<OCR>", max_new_tokens=256, num_beams=1)
-        logger.debug("Florence ocr complete")
+        raw = _florence_generate("<OCR>", pil_image, max_new_tokens=256, num_beams=1)
+        logger.debug("Florence OCR complete")
         return re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
     except Exception:
         logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
         return ""
+
+
+def _run_florence(pil_image: Image.Image) -> dict:
+    """Run all Florence-2 tasks sequentially on the single model instance."""
+    return {
+        "od":  get_florence_tags(pil_image),
+        "cap": get_florence_description(pil_image),
+        "ocr": get_florence_ocr(pil_image),
+    }
 
 
 # ── SigLIP ─────────────────────────────────────────────────────────────────────
@@ -360,11 +350,9 @@ def health():
     return jsonify({
         "status": "ok",
         "models": {
-            "florence_od":  _status(ENABLE_FLORENCE_OD,  florence_model_od  is not None),
-            "florence_cap": _status(ENABLE_FLORENCE_CAP, florence_model_cap is not None),
-            "florence_ocr": _status(ENABLE_FLORENCE_OCR, florence_model_ocr is not None),
-            "siglip":       _status(ENABLE_SIGLIP,       siglip_model       is not None),
-            "ram":          _status(ENABLE_RAM,           ram_model          is not None),
+            "florence": _status(ENABLE_FLORENCE, florence_model is not None),
+            "siglip":   _status(ENABLE_SIGLIP,   siglip_model   is not None),
+            "ram":      _status(ENABLE_RAM,       ram_model      is not None),
         },
         "device":          DEVICE,
         "max_concurrency": MAX_CONCURRENCY,
@@ -385,11 +373,9 @@ def analyse():
     """
     not_loaded = [
         name for name, enabled, loaded in [
-            ("Florence-2 OD",  ENABLE_FLORENCE_OD,  florence_model_od  is not None),
-            ("Florence-2 CAP", ENABLE_FLORENCE_CAP, florence_model_cap is not None),
-            ("Florence-2 OCR", ENABLE_FLORENCE_OCR, florence_model_ocr is not None),
-            ("SigLIP",         ENABLE_SIGLIP,       siglip_model       is not None),
-            ("RAM++",          ENABLE_RAM,           ram_model          is not None),
+            ("Florence-2", ENABLE_FLORENCE, florence_model is not None),
+            ("SigLIP",     ENABLE_SIGLIP, siglip_model   is not None),
+            ("RAM++",      ENABLE_RAM,    ram_model       is not None),
         ] if enabled and not loaded
     ]
     if not_loaded:
@@ -445,20 +431,17 @@ def analyse():
 
     try:
         futures = {}
-        if ENABLE_FLORENCE_OD:
-            futures["od"]    = _inference_pool.submit(get_florence_tags, pil_image)
-        if ENABLE_FLORENCE_CAP:
-            futures["cap"]   = _inference_pool.submit(get_florence_description, pil_image)
-        if ENABLE_FLORENCE_OCR:
-            futures["ocr"]   = _inference_pool.submit(get_florence_ocr, pil_image)
+        if ENABLE_FLORENCE:
+            futures["florence"] = _inference_pool.submit(_run_florence, pil_image)
         if ENABLE_SIGLIP:
-            futures["siglip"] = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
+            futures["siglip"]   = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
         if ENABLE_RAM:
-            futures["ram"]    = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
+            futures["ram"]      = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
         if futures:
             wait(futures.values())
 
-        tags = futures["od"].result() if "od" in futures else []
+        florence_results = futures["florence"].result() if "florence" in futures else {}
+        tags = florence_results.get("od", [])
         seen = {t.lower() for t in tags}
         for tag in [
             *(futures["siglip"].result() if "siglip" in futures else []),
@@ -470,8 +453,8 @@ def analyse():
 
         return jsonify({
             "tags":        tags,
-            "description": futures["cap"].result() if "cap" in futures else "",
-            "text":        futures["ocr"].result() if "ocr" in futures else "",
+            "description": florence_results.get("cap", ""),
+            "text":        florence_results.get("ocr", ""),
         })
 
     finally:
@@ -494,11 +477,9 @@ def _report_devices() -> None:
 
     logger.info("=" * 56)
     logger.info("Model device report")
-    logger.info("  Florence-2 OD  : %s", _device_of(ENABLE_FLORENCE_OD,  florence_model_od))
-    logger.info("  Florence-2 CAP : %s", _device_of(ENABLE_FLORENCE_CAP, florence_model_cap))
-    logger.info("  Florence-2 OCR : %s", _device_of(ENABLE_FLORENCE_OCR, florence_model_ocr))
-    logger.info("  SigLIP         : %s", _device_of(ENABLE_SIGLIP,       siglip_model))
-    logger.info("  RAM++          : %s", _device_of(ENABLE_RAM,           ram_model))
+    logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
+    logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
+    logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
     logger.info("=" * 56)
 
 
