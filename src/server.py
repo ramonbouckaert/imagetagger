@@ -160,7 +160,8 @@ def load_florence_model() -> None:
 def _florence_generate(model, pil_image: Image.Image, task: str, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
     """Run one Florence-2 task on the given model instance and return cleaned text."""
     inputs = florence_processor(text=task, images=pil_image, return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    model_dtype = next(model.parameters()).dtype
+    inputs = {k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
         generated_ids = model.generate(
             input_ids=inputs["input_ids"],
@@ -190,7 +191,8 @@ def get_florence_tags(pil_image: Image.Image) -> list[str]:
         return []
     try:
         inputs = florence_processor(text="<OD>", images=pil_image, return_tensors="pt")
-        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+        model_dtype = next(florence_model_od.parameters()).dtype
+        inputs = {k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE) for k, v in inputs.items()}
         with torch.no_grad():
             generated_ids = florence_model_od.generate(
                 input_ids=inputs["input_ids"],
@@ -272,7 +274,6 @@ def load_siglip_model() -> None:
     siglip_processor = SiglipProcessor.from_pretrained(SIGLIP_MODEL_ID)
     siglip_model     = SiglipModel.from_pretrained(SIGLIP_MODEL_ID).to(DEVICE)
     siglip_model.eval()
-    siglip_model = _compile(siglip_model)
     with torch.no_grad():
         text_inputs         = siglip_processor(
             text=SIGLIP_CANDIDATE_TAGS, return_tensors="pt", padding="max_length",
@@ -319,7 +320,6 @@ def load_ram_model() -> None:
     ram_model = ram_plus(pretrained=RAM_CHECKPOINT, image_size=384, vit="swin_l")
     ram_model.eval()
     ram_model = ram_model.to(DEVICE)
-    ram_model = _compile(ram_model)
     logger.info("RAM++ model loaded.")
 
 
