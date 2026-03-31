@@ -4,6 +4,12 @@
 # work on bare metal.
 FROM dustynv/cuda:12.2-r36.2.0
 
+# ── APT mirror ────────────────────────────────────────────────────────────────
+# Handles both Ubuntu 20.04 (sources.list) and 24.04 (DEB822 .sources format).
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; \
+    sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+    true
+
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
