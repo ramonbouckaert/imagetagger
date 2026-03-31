@@ -8,5 +8,6 @@ services:
     environment:
       - PORT=9100
       - RAM_CHECKPOINT=/app/ram_plus_swin_large_14m.pth
+      - NVIDIA_VISIBLE_DEVICES=all
     restart: unless-stopped
 
