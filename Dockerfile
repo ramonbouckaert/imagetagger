@@ -2,7 +2,7 @@
 # PyTorch and torchvision are installed from the Jetson AI Lab PyPI index,
 # which provides aarch64 wheels built for JetPack 6 — the same wheels that
 # work on bare metal.
-FROM dustynv/cuda:12.6-devel-r36.4.0
+FROM dustynv/cuda:12.6-r36.4.0
 
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
