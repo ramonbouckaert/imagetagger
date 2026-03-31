@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     python3-pip \
     python3-venv \
+    libcudnn9 \
+    libcudnn9-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
