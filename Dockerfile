@@ -53,9 +53,11 @@ print('RAM++ checkpoint downloaded.')"
 # Copied after model downloads so changes here don't bust the model cache.
 
 COPY src/requirements.txt .
-# Build pillow-heif from source so it links against system libheif (with AV1)
-# rather than the bundled wheel which may lack the AV1 codec on this platform.
-RUN pip install --no-cache-dir --no-binary pillow-heif -r requirements.txt
+# Use the pre-built pillow-heif wheel. The manylinux aarch64 wheel bundles its
+# own libheif (with AV1/AVIF support), which is newer than the 1.12.0 version
+# shipped in Ubuntu 22.04 / L4T R36 — building from source against the system
+# libheif fails because pillow-heif>=0.21 requires libheif>=1.16.
+RUN pip install --no-cache-dir -r requirements.txt
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
 RUN pip install --no-cache-dir git+https://github.com/xinyu1205/recognize-anything.git
 
