@@ -318,7 +318,8 @@ def load_ram_model() -> None:
     _ram_transform = ram_get_transform(image_size=384)
     ram_model = ram_plus(pretrained=RAM_CHECKPOINT, image_size=384, vit="swin_l")
     ram_model.eval()
-    ram_model = ram_model.to(DEVICE)
+    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+    ram_model = ram_model.to(DEVICE, dtype=dtype)
     logger.info("RAM++ model loaded.")
 
 
