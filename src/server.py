@@ -18,13 +18,9 @@ from concurrent.futures import ThreadPoolExecutor, wait
 
 from PIL import Image
 try:
-    from pillow_heif import register_heif_opener, open_heif as _heif_open
-    register_heif_opener()
-    _HEIF_AVAILABLE = True
+    import pillow_avif  # noqa: F401 — registers AVIF support with Pillow on import
 except ImportError:
-    _HEIF_AVAILABLE = False
-    _heif_open = None
-    logging.warning("pillow-heif not installed — AVIF/HEIC images will not be supported")
+    logging.warning("pillow-avif-plugin not installed — AVIF images will not be supported")
 from flask import Flask, request, jsonify
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
@@ -73,17 +69,7 @@ if _import_errors:
 MODELS_AVAILABLE = len(_import_errors) == 0
 
 def _open_image(data: bytes) -> Image.Image:
-    """
-    Open image bytes via PIL. Falls back to open_heif() directly for AVIF/HEIC
-    files whose ftyp brand PIL's auto-detection rejects but libheif can decode.
-    """
-    try:
-        return Image.open(io.BytesIO(data))
-    except Exception:
-        if _HEIF_AVAILABLE:
-            heif = _heif_open(io.BytesIO(data))
-            return heif[0].to_pillow()
-        raise
+    return Image.open(io.BytesIO(data))
 
 
 def _compile(model):
@@ -116,7 +102,10 @@ try:
 except NameError:
     DEVICE = "cpu"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)

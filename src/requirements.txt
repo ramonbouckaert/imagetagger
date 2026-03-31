@@ -3,7 +3,7 @@ flask>=3.0
 
 # Image processing
 pillow>=10.0
-pillow-heif>=0.21.0  # AVIF/HEIC support; >=0.21 required for tiled AVIF (common in large images)
+pillow-avif-plugin  # AVIF support; manylinux aarch64 wheel bundles libavif with AV1
 
 # Deep-learning backend
 # In the JetPack/L4T Docker image, torch and torchvision are pre-installed with
