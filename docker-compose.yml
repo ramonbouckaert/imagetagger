@@ -1,3 +1,10 @@
+volumes:
+  # Named volumes for model storage. Docker initialises these from the image on
+  # first run; subsequent starts (including after image rebuilds) reuse the data
+  # already on disk — models are never re-downloaded unless the volume is removed.
+  hf_cache:
+  checkpoints:
+
 services:
   imagetagger:
     build:
@@ -5,9 +12,12 @@ services:
       dockerfile: Dockerfile
     runtime: nvidia          # required for Jetson GPU access via NVIDIA Container Runtime
     network_mode: host
+    volumes:
+      - hf_cache:/app/.hf_cache
+      - checkpoints:/app/checkpoints
     environment:
       - PORT=9100
-      - RAM_CHECKPOINT=/app/ram_plus_swin_large_14m.pth
+      - RAM_CHECKPOINT=/app/checkpoints/ram_plus_swin_large_14m.pth
       - NVIDIA_VISIBLE_DEVICES=all
     restart: unless-stopped
 

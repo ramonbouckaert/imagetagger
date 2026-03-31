@@ -105,6 +105,14 @@ MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
 RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 
+# ── Model enable flags ─────────────────────────────────────────────────────────
+# Set any to False to skip loading and running that model entirely.
+ENABLE_FLORENCE_OD  = True  # Florence-2 <OD>: object-detection tags
+ENABLE_FLORENCE_CAP = True  # Florence-2 <MORE_DETAILED_CAPTION>: image description
+ENABLE_FLORENCE_OCR = True  # Florence-2 <OCR>: text extraction
+ENABLE_SIGLIP       = True  # SigLIP: zero-shot tag classification
+ENABLE_RAM          = True  # RAM++: open-set scene/object tagging
+
 try:
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 except NameError:
@@ -135,26 +143,30 @@ florence_model_ocr  = None  # <OCR> — text extraction
 
 def load_florence_model() -> None:
     global florence_processor, florence_model_od, florence_model_cap, florence_model_ocr
-    if not MODELS_AVAILABLE:
+    any_florence = ENABLE_FLORENCE_OD or ENABLE_FLORENCE_CAP or ENABLE_FLORENCE_OCR
+    if not MODELS_AVAILABLE or not any_florence:
         return
     logger.info("Loading Florence-2 model (%s) on %s ...", FLORENCE_MODEL, DEVICE)
     florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL, trust_remote_code=True)
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    florence_model_od = AutoModelForCausalLM.from_pretrained(
-                             FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                         ).to(DEVICE)
-    florence_model_cap = AutoModelForCausalLM.from_pretrained(
-                              FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                          ).to(DEVICE)
-    florence_model_ocr = AutoModelForCausalLM.from_pretrained(
-                              FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
-                          ).to(DEVICE)
-    florence_model_od.eval()
-    logger.info("Florence-2 model loaded (OD).")
-    florence_model_cap.eval()
-    logger.info("Florence-2 model loaded (CAP).")
-    florence_model_ocr.eval()
-    logger.info("Florence-2 model loaded (OCR).")
+    if ENABLE_FLORENCE_OD:
+        florence_model_od = AutoModelForCausalLM.from_pretrained(
+                                FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                            ).to(DEVICE)
+        florence_model_od.eval()
+        logger.info("Florence-2 model loaded (OD).")
+    if ENABLE_FLORENCE_CAP:
+        florence_model_cap = AutoModelForCausalLM.from_pretrained(
+                                 FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                             ).to(DEVICE)
+        florence_model_cap.eval()
+        logger.info("Florence-2 model loaded (CAP).")
+    if ENABLE_FLORENCE_OCR:
+        florence_model_ocr = AutoModelForCausalLM.from_pretrained(
+                                 FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+                             ).to(DEVICE)
+        florence_model_ocr.eval()
+        logger.info("Florence-2 model loaded (OCR).")
 
 
 def _florence_generate(model, pil_image: Image.Image, task: str, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
@@ -268,7 +280,7 @@ SIGLIP_CANDIDATE_TAGS = [
 
 def load_siglip_model() -> None:
     global siglip_model, siglip_processor, _siglip_text_inputs
-    if not MODELS_AVAILABLE:
+    if not MODELS_AVAILABLE or not ENABLE_SIGLIP:
         return
     logger.info("Loading SigLIP model (%s) on %s ...", SIGLIP_MODEL_ID, DEVICE)
     siglip_processor = SiglipProcessor.from_pretrained(SIGLIP_MODEL_ID)
@@ -310,7 +322,7 @@ _ram_transform = None
 
 def load_ram_model() -> None:
     global ram_model, _ram_transform
-    if not _RAM_AVAILABLE or not MODELS_AVAILABLE:
+    if not _RAM_AVAILABLE or not MODELS_AVAILABLE or not ENABLE_RAM:
         return
     if not os.path.exists(RAM_CHECKPOINT):
         logger.warning("RAM++ checkpoint not found at %s — skipping.", RAM_CHECKPOINT)
@@ -341,13 +353,21 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
 
 @app.route("/health", methods=["GET"])
 def health():
+    def _status(enabled, loaded):
+        if not enabled:
+            return "disabled"
+        return "ok" if loaded else "loading"
     return jsonify({
-        "status":                 "ok",
-        "florence_model_loaded":  florence_model_od is not None,
-        "siglip_model_loaded":    siglip_model is not None,
-        "ram_model_loaded":       ram_model is not None,
-        "device":                 DEVICE,
-        "max_concurrency":        MAX_CONCURRENCY,
+        "status": "ok",
+        "models": {
+            "florence_od":  _status(ENABLE_FLORENCE_OD,  florence_model_od  is not None),
+            "florence_cap": _status(ENABLE_FLORENCE_CAP, florence_model_cap is not None),
+            "florence_ocr": _status(ENABLE_FLORENCE_OCR, florence_model_ocr is not None),
+            "siglip":       _status(ENABLE_SIGLIP,       siglip_model       is not None),
+            "ram":          _status(ENABLE_RAM,           ram_model          is not None),
+        },
+        "device":          DEVICE,
+        "max_concurrency": MAX_CONCURRENCY,
     })
 
 
@@ -364,11 +384,13 @@ def analyse():
     Returns 429 if MAX_CONCURRENCY active requests are already running.
     """
     not_loaded = [
-        name for name, loaded in [
-            ("Florence-2", florence_model_od is not None),
-            ("SigLIP",     siglip_model is not None),
-            ("RAM++",      ram_model is not None),
-        ] if not loaded
+        name for name, enabled, loaded in [
+            ("Florence-2 OD",  ENABLE_FLORENCE_OD,  florence_model_od  is not None),
+            ("Florence-2 CAP", ENABLE_FLORENCE_CAP, florence_model_cap is not None),
+            ("Florence-2 OCR", ENABLE_FLORENCE_OCR, florence_model_ocr is not None),
+            ("SigLIP",         ENABLE_SIGLIP,       siglip_model       is not None),
+            ("RAM++",          ENABLE_RAM,           ram_model          is not None),
+        ] if enabled and not loaded
     ]
     if not_loaded:
         return jsonify({
@@ -422,24 +444,34 @@ def analyse():
         }), 429
 
     try:
-        future_od   = _inference_pool.submit(get_florence_tags, pil_image)
-        future_cap  = _inference_pool.submit(get_florence_description, pil_image)
-        future_ocr  = _inference_pool.submit(get_florence_ocr, pil_image)
-        future_siglip = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
-        future_ram    = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
-        wait([future_od, future_cap, future_ocr, future_siglip, future_ram])
+        futures = {}
+        if ENABLE_FLORENCE_OD:
+            futures["od"]    = _inference_pool.submit(get_florence_tags, pil_image)
+        if ENABLE_FLORENCE_CAP:
+            futures["cap"]   = _inference_pool.submit(get_florence_description, pil_image)
+        if ENABLE_FLORENCE_OCR:
+            futures["ocr"]   = _inference_pool.submit(get_florence_ocr, pil_image)
+        if ENABLE_SIGLIP:
+            futures["siglip"] = _inference_pool.submit(get_siglip_tags, pil_image, siglip_threshold)
+        if ENABLE_RAM:
+            futures["ram"]    = _inference_pool.submit(get_ram_tags, pil_image, ram_threshold)
+        if futures:
+            wait(futures.values())
 
-        tags = future_od.result()
+        tags = futures["od"].result() if "od" in futures else []
         seen = {t.lower() for t in tags}
-        for tag in [*future_siglip.result(), *future_ram.result()]:
+        for tag in [
+            *(futures["siglip"].result() if "siglip" in futures else []),
+            *(futures["ram"].result()    if "ram"    in futures else []),
+        ]:
             if tag.lower() not in seen:
                 tags.append(tag)
                 seen.add(tag.lower())
 
         return jsonify({
             "tags":        tags,
-            "description": future_cap.result(),
-            "text":        future_ocr.result(),
+            "description": futures["cap"].result() if "cap" in futures else "",
+            "text":        futures["ocr"].result() if "ocr" in futures else "",
         })
 
     finally:
@@ -450,7 +482,9 @@ def analyse():
 
 def _report_devices() -> None:
     """After all models load, log the actual device each one is running on."""
-    def _device_of(model) -> str:
+    def _device_of(enabled, model) -> str:
+        if not enabled:
+            return "disabled"
         if model is None:
             return "not loaded"
         try:
@@ -460,11 +494,11 @@ def _report_devices() -> None:
 
     logger.info("=" * 56)
     logger.info("Model device report")
-    logger.info("  Florence-2 OD  : %s", _device_of(florence_model_od))
-    logger.info("  Florence-2 CAP : %s", _device_of(florence_model_cap))
-    logger.info("  Florence-2 OCR : %s", _device_of(florence_model_ocr))
-    logger.info("  SigLIP         : %s", _device_of(siglip_model))
-    logger.info("  RAM++          : %s", _device_of(ram_model))
+    logger.info("  Florence-2 OD  : %s", _device_of(ENABLE_FLORENCE_OD,  florence_model_od))
+    logger.info("  Florence-2 CAP : %s", _device_of(ENABLE_FLORENCE_CAP, florence_model_cap))
+    logger.info("  Florence-2 OCR : %s", _device_of(ENABLE_FLORENCE_OCR, florence_model_ocr))
+    logger.info("  SigLIP         : %s", _device_of(ENABLE_SIGLIP,       siglip_model))
+    logger.info("  RAM++          : %s", _device_of(ENABLE_RAM,           ram_model))
     logger.info("=" * 56)
 
 

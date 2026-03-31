@@ -63,7 +63,7 @@ print('SigLIP downloaded.')"
 
 RUN python3 -c "\
 from huggingface_hub import hf_hub_download; \
-hf_hub_download(repo_id='xinyu1205/recognize-anything-plus-model', filename='ram_plus_swin_large_14m.pth', local_dir='.'); \
+hf_hub_download(repo_id='xinyu1205/recognize-anything-plus-model', filename='ram_plus_swin_large_14m.pth', local_dir='/app/checkpoints'); \
 print('RAM++ checkpoint downloaded.')"
 
 # ── Python dependencies ────────────────────────────────────────────────────────
