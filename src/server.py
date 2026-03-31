@@ -261,15 +261,19 @@ def load_siglip_model() -> None:
     global siglip_model, siglip_processor, _siglip_text_inputs
     if not MODELS_AVAILABLE or not ENABLE_SIGLIP:
         return
+    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     logger.info("Loading SigLIP model (%s) on %s ...", SIGLIP_MODEL_ID, DEVICE)
     siglip_processor = SiglipProcessor.from_pretrained(SIGLIP_MODEL_ID)
-    siglip_model     = SiglipModel.from_pretrained(SIGLIP_MODEL_ID).to(DEVICE)
+    siglip_model     = SiglipModel.from_pretrained(SIGLIP_MODEL_ID, torch_dtype=dtype).to(DEVICE)
     siglip_model.eval()
     with torch.no_grad():
-        text_inputs         = siglip_processor(
+        text_inputs = siglip_processor(
             text=SIGLIP_CANDIDATE_TAGS, return_tensors="pt", padding="max_length",
         )
-        _siglip_text_inputs = {k: v.to(DEVICE) for k, v in text_inputs.items()}
+        _siglip_text_inputs = {
+            k: v.to(DEVICE, dtype=dtype) if v.is_floating_point() else v.to(DEVICE)
+            for k, v in text_inputs.items()
+        }
     logger.info("SigLIP model loaded.")
 
 
@@ -279,7 +283,11 @@ def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return []
     try:
         img_inputs = siglip_processor(images=pil_image, return_tensors="pt")
-        img_inputs = {k: v.to(DEVICE) for k, v in img_inputs.items()}
+        model_dtype = next(siglip_model.parameters()).dtype
+        img_inputs = {
+            k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
+            for k, v in img_inputs.items()
+        }
         with torch.no_grad():
             outputs = siglip_model(
                 pixel_values=img_inputs["pixel_values"],
