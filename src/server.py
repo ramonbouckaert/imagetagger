@@ -2,7 +2,7 @@
 Image Analysis Server
 - Uses Florence-2 for image tagging (OD), description, and OCR
 - Uses RAM++ and SigLIP as additional tagging passes, results merged
-- Uses T5 tag generation to extract additional tags from description and OCR text
+- Uses extractive keyphrase extraction to pull additional tags from description and OCR text
 - Request queue with configurable max concurrency to prevent OOM
 - Exposes POST /analyse and GET /health
 """
@@ -36,8 +36,9 @@ except ImportError as e:
     _import_errors.append(f"  • torch — {e}\n    Fix: {sys.executable} -m pip install torch torchvision")
 
 try:
-    from transformers import AutoProcessor, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer, AutoModelForTokenClassification
     from transformers import SiglipModel, SiglipProcessor
+    from transformers import pipeline as hf_pipeline
 except ImportError as e:
     _import_errors.append(
         f"  • transformers — {e}\n"
@@ -87,7 +88,7 @@ def _compile(model):
 FLORENCE_MODEL       = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 SIGLIP_MODEL_ID      = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
 RAM_CHECKPOINT       = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
-T5_TAGS_MODEL_ID     = os.environ.get("T5_TAGS_MODEL", "fabiochiu/t5-base-tag-generation")
+KEYPHRASE_MODEL_ID   = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-distilbert-openkp")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
@@ -98,7 +99,7 @@ RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 ENABLE_FLORENCE  = True  # Florence-2: OD tags, image description, OCR
 ENABLE_SIGLIP    = True  # SigLIP: zero-shot tag classification
 ENABLE_RAM       = True  # RAM++: open-set scene/object tagging
-ENABLE_T5_TAGS   = True  # T5 tag generation from description and OCR text
+ENABLE_KEYPHRASE = True  # Extractive keyphrase extraction from description and OCR text
 
 try:
     if torch.cuda.is_available():
@@ -354,49 +355,37 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return []
 
 
-# ── T5 tag generation ─────────────────────────────────────────────────────────
-t5_tags_model     = None
-t5_tags_tokenizer = None
+# ── Keyphrase extraction ───────────────────────────────────────────────────────
+_keyphrase_pipeline = None
 
 
-def load_t5_tags_model() -> None:
-    global t5_tags_model, t5_tags_tokenizer
-    if not MODELS_AVAILABLE or not ENABLE_T5_TAGS:
+def load_keyphrase_model() -> None:
+    global _keyphrase_pipeline
+    if not MODELS_AVAILABLE or not ENABLE_KEYPHRASE:
         return
-    logger.info("Loading T5 tag generation model (%s) on %s ...", T5_TAGS_MODEL_ID, DEVICE)
-    t5_tags_tokenizer = AutoTokenizer.from_pretrained(T5_TAGS_MODEL_ID)
-    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    t5_tags_model = AutoModelForSeq2SeqLM.from_pretrained(
-        T5_TAGS_MODEL_ID, torch_dtype=dtype,
-    ).to(DEVICE)
-    t5_tags_model.eval()
-    logger.info("T5 tag generation model loaded.")
+    logger.info("Loading keyphrase extraction model (%s) on %s ...", KEYPHRASE_MODEL_ID, DEVICE)
+    device_id = 0 if DEVICE == "cuda" else -1
+    _keyphrase_pipeline = hf_pipeline(
+        "token-classification",
+        model=KEYPHRASE_MODEL_ID,
+        aggregation_strategy="simple",
+        device=device_id,
+    )
+    logger.info("Keyphrase extraction model loaded.")
 
 
-def get_t5_tags(text: str) -> list[str]:
-    """Extract tags from text using T5 tag generation model."""
-    logger.debug("T5 tag generation started")
-    if t5_tags_model is None or t5_tags_tokenizer is None or not text.strip():
+def get_keyphrases(text: str) -> list[str]:
+    """Extract keyphrases present in text using token classification."""
+    logger.debug("Keyphrase extraction started")
+    if _keyphrase_pipeline is None or not text.strip():
         return []
     try:
-        inputs = t5_tags_tokenizer(
-            [text], max_length=512, truncation=True, return_tensors="pt",
-        )
-        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-        with torch.no_grad():
-            output = t5_tags_model.generate(
-                **inputs,
-                num_beams=8,
-                do_sample=True,
-                min_length=10,
-                max_length=64,
-            )
-        decoded = t5_tags_tokenizer.batch_decode(output, skip_special_tokens=True)[0].strip()
-        tags = [t.strip() for t in decoded.split(",") if t.strip()]
-        logger.debug("T5 tag generation complete: %s", tags)
+        results = _keyphrase_pipeline(text)
+        tags = [r["word"].strip() for r in results if r.get("entity_group") == "KEY" and r.get("word", "").strip()]
+        logger.debug("Keyphrase extraction complete: %s", tags)
         return tags
     except Exception:
-        logger.error("T5 tag generation failed:\n%s", traceback.format_exc())
+        logger.error("Keyphrase extraction failed:\n%s", traceback.format_exc())
         return []
 
 
@@ -414,7 +403,7 @@ def health():
             "florence": _status(ENABLE_FLORENCE, florence_model   is not None),
             "siglip":   _status(ENABLE_SIGLIP,   siglip_model     is not None),
             "ram":      _status(ENABLE_RAM,       ram_model        is not None),
-            "t5_tags":  _status(ENABLE_T5_TAGS,  t5_tags_model    is not None),
+            "keyphrase": _status(ENABLE_KEYPHRASE, _keyphrase_pipeline is not None),
         },
         "device":          DEVICE,
         "max_concurrency": MAX_CONCURRENCY,
@@ -438,7 +427,7 @@ def analyse():
             ("Florence-2",       ENABLE_FLORENCE, florence_model   is not None),
             ("SigLIP",           ENABLE_SIGLIP,   siglip_model     is not None),
             ("RAM++",            ENABLE_RAM,      ram_model        is not None),
-            ("T5 tag generation",ENABLE_T5_TAGS,  t5_tags_model    is not None),
+            ("Keyphrase extraction", ENABLE_KEYPHRASE, _keyphrase_pipeline is not None),
         ] if enabled and not loaded
     ]
     if not_loaded:
@@ -514,16 +503,15 @@ def analyse():
                 tags.append(tag)
                 seen.add(tag.lower())
 
-        # T5 tag generation — runs after Florence since it needs description + OCR.
+        # Keyphrase extraction — runs after Florence since it needs description + OCR.
         # Submitted to the pool to keep inference off the Flask thread.
-        if ENABLE_T5_TAGS and t5_tags_model is not None:
+        if ENABLE_KEYPHRASE and _keyphrase_pipeline is not None:
             text_input = " ".join(filter(None, [
                 florence_results.get("cap", ""),
                 florence_results.get("ocr", ""),
             ])).strip()
             if text_input:
-                t5_tags = _inference_pool.submit(get_t5_tags, text_input).result()
-                for tag in t5_tags:
+                for tag in _inference_pool.submit(get_keyphrases, text_input).result():
                     if tag.lower() not in seen:
                         tags.append(tag)
                         seen.add(tag.lower())
@@ -557,7 +545,7 @@ def _report_devices() -> None:
     logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
-    logger.info("  T5 tags    : %s", _device_of(ENABLE_T5_TAGS,  t5_tags_model))
+    logger.info("  Keyphrase  : %s", "ok" if _keyphrase_pipeline is not None else ("disabled" if not ENABLE_KEYPHRASE else "not loaded"))
     logger.info("=" * 56)
 
 
@@ -565,7 +553,7 @@ def _report_devices() -> None:
 load_florence_model()
 load_siglip_model()
 load_ram_model()
-load_t5_tags_model()
+load_keyphrase_model()
 _report_devices()
 
 # ── Entry point ────────────────────────────────────────────────────────────────
