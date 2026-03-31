@@ -30,47 +30,14 @@ WORKDIR /app
 RUN python3 -m venv /app/venv --system-site-packages
 ENV PATH=/app/venv/bin:$PATH
 
-# Pin torch and torchvision to the exact versions already in the base image so
-# that no subsequent 'pip install' can upgrade them to incompatible PyPI wheels.
-# (e.g. transformers lists torch as a dependency and would otherwise pull in the
-# latest x86/CUDA-13 wheel, which won't initialise on the Jetson's CUDA 12 driver.)
+# Pin torch to the exact version already in the base image so that no subsequent
+# 'pip install' can upgrade it to an incompatible PyPI wheel.
 RUN python3 -c "\
 import torch; \
 open('/constraints.txt','w').write(f'torch=={torch.__version__}\n'); \
 print('Pinned:', open('/constraints.txt').read().strip())"
 
-# ── Model downloads ────────────────────────────────────────────────────────────
-# Install only what's needed to pull models from HuggingFace, before copying
-# requirements.txt — this keeps the large model layers from being invalidated
-# by routine requirements changes.
-# Pin transformers to the same range as requirements.txt — Florence-2's config
-# code accesses forced_bos_token_id before parent __init__ sets it on >= 4.47.
-RUN pip install --no-cache-dir --constraint /constraints.txt \
-    "transformers>=4.40,<4.47" huggingface_hub timm einops tqdm
-
-# Models are cached here so the container needs no network access at runtime.
-ENV HF_HOME=/app/.hf_cache
-# Ensure tqdm progress bars flush immediately to Docker build output.
-ENV PYTHONUNBUFFERED=1
-
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='microsoft/Florence-2-large'); \
-print('Florence-2-large downloaded.')"
-
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='google/siglip-so400m-patch14-384'); \
-print('SigLIP downloaded.')"
-
-RUN python3 -c "\
-from huggingface_hub import hf_hub_download; \
-hf_hub_download(repo_id='xinyu1205/recognize-anything-plus-model', filename='ram_plus_swin_large_14m.pth', local_dir='/app/checkpoints'); \
-print('RAM++ checkpoint downloaded.')"
-
 # ── Python dependencies ────────────────────────────────────────────────────────
-# Copied after model downloads so changes here don't bust the model cache.
-
 COPY src/requirements.txt .
 RUN pip install --no-cache-dir --constraint /constraints.txt -r requirements.txt
 
@@ -80,11 +47,17 @@ RUN pip install --no-cache-dir --constraint /constraints.txt \
 
 # ── Application ────────────────────────────────────────────────────────────────
 COPY src/server.py .
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
+# Models are downloaded by the entrypoint into the persistent volumes on first
+# run and skipped on all subsequent starts (including after image rebuilds).
+ENV HF_HOME=/app/.hf_cache
+ENV PYTHONUNBUFFERED=1
 ENV PORT=9100
 
 EXPOSE 9100
 
+ENTRYPOINT ["/entrypoint.sh"]
 # Single worker to avoid duplicating the large model in memory.
-# Raise -w if you have enough RAM (each worker loads its own copy).
 CMD ["sh", "-c", "exec gunicorn -w 1 -b 0.0.0.0:${PORT} --timeout 300 server:app"]
