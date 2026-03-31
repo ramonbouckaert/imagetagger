@@ -28,13 +28,23 @@ WORKDIR /app
 RUN python3 -m venv /app/venv --system-site-packages
 ENV PATH=/app/venv/bin:$PATH
 
+# Pin torch and torchvision to the exact versions already in the base image so
+# that no subsequent 'pip install' can upgrade them to incompatible PyPI wheels.
+# (e.g. transformers lists torch as a dependency and would otherwise pull in the
+# latest x86/CUDA-13 wheel, which won't initialise on the Jetson's CUDA 12 driver.)
+RUN python3 -c "\
+import torch, torchvision; \
+open('/constraints.txt','w').write(f'torch=={torch.__version__}\ntorchvision=={torchvision.__version__}\n'); \
+print('Pinned:', open('/constraints.txt').read().strip())"
+
 # ── Model downloads ────────────────────────────────────────────────────────────
 # Install only what's needed to pull models from HuggingFace, before copying
 # requirements.txt — this keeps the large model layers from being invalidated
 # by routine requirements changes.
 # Pin transformers to the same range as requirements.txt — Florence-2's config
 # code accesses forced_bos_token_id before parent __init__ sets it on >= 4.47.
-RUN pip install --no-cache-dir "transformers>=4.40,<4.47" huggingface_hub timm einops tqdm
+RUN pip install --no-cache-dir --constraint /constraints.txt \
+    "transformers>=4.40,<4.47" huggingface_hub timm einops tqdm
 
 # Models are cached here so the container needs no network access at runtime.
 ENV HF_HOME=/app/.hf_cache
@@ -60,14 +70,11 @@ print('RAM++ checkpoint downloaded.')"
 # Copied after model downloads so changes here don't bust the model cache.
 
 COPY src/requirements.txt .
-# Use the pre-built pillow-heif wheel. The manylinux aarch64 wheel bundles its
-# own libheif (with AV1/AVIF support), which is newer than the 1.12.0 version
-# shipped in Ubuntu 22.04 / L4T R36 — building from source against the system
-# libheif fails because pillow-heif>=0.21 requires libheif>=1.16.
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --constraint /constraints.txt -r requirements.txt
 
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
-RUN pip install --no-cache-dir git+https://github.com/xinyu1205/recognize-anything.git
+RUN pip install --no-cache-dir --constraint /constraints.txt \
+    git+https://github.com/xinyu1205/recognize-anything.git
 
 # ── Application ────────────────────────────────────────────────────────────────
 COPY src/server.py .
