@@ -25,9 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── NVIDIA CUDA apt repo keyring ──────────────────────────────────────────────
-RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i cuda-keyring_1.1-1_all.deb \
-    && rm cuda-keyring_1.1-1_all.deb \
+RUN curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb -o cuda-keyring.deb \
+    && dpkg -i cuda-keyring.deb \
+    && rm cuda-keyring.deb \
     && apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
