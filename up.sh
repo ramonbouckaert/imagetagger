@@ -4,7 +4,7 @@
 set -e
 
 if command -v autotag &>/dev/null; then
-    export BASE_IMAGE=$(autotag pytorch)
+    export BASE_IMAGE=$(autotag l4t-pytorch)
     echo "Using base image: $BASE_IMAGE"
 else
     echo "Warning: autotag not found — using default base image from Dockerfile."
