@@ -10,6 +10,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     runtime: nvidia          # required for Jetson GPU access via NVIDIA Container Runtime
     network_mode: host
     volumes:
