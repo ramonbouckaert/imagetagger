@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     libopenblas0 \
+    libcupti-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
