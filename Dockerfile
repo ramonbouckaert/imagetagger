@@ -2,7 +2,7 @@
 # PyTorch and torchvision are installed from the Jetson AI Lab PyPI index,
 # which provides aarch64 wheels built for JetPack 6 — the same wheels that
 # work on bare metal.
-FROM dustynv/cuda:12.2-r36.2.0
+FROM nvcr.io/nvidia/l4t-cuda:12.6.11-runtime
 
 # ── APT mirror ────────────────────────────────────────────────────────────────
 # Handles both Ubuntu 20.04 (sources.list) and 24.04 (DEB822 .sources format).
