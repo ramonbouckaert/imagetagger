@@ -2,7 +2,10 @@
 # PyTorch 2.1 with CUDA is pre-installed in this base image — do NOT reinstall
 # torch/torchvision from PyPI; the standard wheels target x86 and will not work
 # on aarch64/Jetson.
-FROM nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.1-py3
+#
+# Using dusty-nv's image (Docker Hub, no auth required).
+# Official NVIDIA alternative (requires NGC login): nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.1-py3
+FROM dustynv/pytorch:2.1-r36.2.0
 
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
