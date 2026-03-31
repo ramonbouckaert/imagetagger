@@ -37,7 +37,8 @@ ENV PATH=/app/venv/bin:$PATH
 RUN python3 -c "\
 import torch; \
 open('/constraints.txt','w').write(f'torch=={torch.__version__}\n'); \
-print('Pinned:', open('/constraints.txt').read().strip())"
+print('Pinned:', open('/constraints.txt').read().strip())" \
+    || (echo "torch not importable in venv — skipping pin" && touch /constraints.txt)
 
 # ── Python dependencies ────────────────────────────────────────────────────────
 COPY src/requirements.txt .
