@@ -2,13 +2,27 @@
 # PyTorch and torchvision are installed from the Jetson AI Lab PyPI index,
 # which provides aarch64 wheels built for JetPack 6 — the same wheels that
 # work on bare metal.
-FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+FROM nvcr.io/nvidia/l4t-cuda:12.6.11-devel
 
 # ── APT mirror ────────────────────────────────────────────────────────────────
 # Handles both Ubuntu 20.04 (sources.list) and 24.04 (DEB822 .sources format).
 RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; \
     sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
     true
+
+# ── JetPack apt repo (L4T r36.4 / JetPack 6.2) ───────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg \
+    && curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+       | gpg --dearmor -o /usr/share/keyrings/nvidia-jetson.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] \
+       https://repo.download.nvidia.com/jetson/common r36.4 main" \
+       > /etc/apt/sources.list.d/nvidia-jetson.list \
+    && echo "deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] \
+       https://repo.download.nvidia.com/jetson/t234 r36.4 main" \
+       > /etc/apt/sources.list.d/nvidia-jetson-t234.list \
+    && apt-get update \
+    && rm -rf /var/lib/apt/lists/*
 
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,22 +36,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     libopenblas0 \
+    cuda-libraries-12-6 \
+    libcudnn9-cuda-12 \
+    libcudnn9-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# ── CUDA runtime libraries + cuDNN 9 ──────────────────────────────────────────
-# cuda-libraries-12-6 is a meta-package that pulls in the full set of CUDA 12.6
-# runtime libs (cublas, cufft, curand, cusolver, cusparse, cupti, etc.) that
-# PyTorch links against. cuDNN is installed from the same repo.
-RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i cuda-keyring_1.1-1_all.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        cuda-libraries-12-6 \
-        libcudnn9-cuda-12 \
-        libcudnn9-dev-cuda-12 \
-    && rm -rf /var/lib/apt/lists/* cuda-keyring_1.1-1_all.deb
 
 # ── cuSPARSELt ────────────────────────────────────────────────────────────────
 # Must be installed via .deb before torch, as the wheel depends on the shared libs.
