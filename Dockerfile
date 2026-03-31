@@ -33,8 +33,8 @@ ENV PATH=/app/venv/bin:$PATH
 # (e.g. transformers lists torch as a dependency and would otherwise pull in the
 # latest x86/CUDA-13 wheel, which won't initialise on the Jetson's CUDA 12 driver.)
 RUN python3 -c "\
-import torch, torchvision; \
-open('/constraints.txt','w').write(f'torch=={torch.__version__}\ntorchvision=={torchvision.__version__}\n'); \
+import torch; \
+open('/constraints.txt','w').write(f'torch=={torch.__version__}\n'); \
 print('Pinned:', open('/constraints.txt').read().strip())"
 
 # ── Model downloads ────────────────────────────────────────────────────────────
