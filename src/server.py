@@ -94,7 +94,7 @@ RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 # ── Model enable flags ─────────────────────────────────────────────────────────
 # Set any to False to skip loading and running that model entirely.
 ENABLE_FLORENCE = True  # Florence-2: OD tags, image description, OCR
-ENABLE_SIGLIP   = True  # SigLIP: zero-shot tag classification
+ENABLE_SIGLIP   = False  # SigLIP: zero-shot tag classification
 ENABLE_RAM      = True  # RAM++: open-set scene/object tagging
 
 try:
