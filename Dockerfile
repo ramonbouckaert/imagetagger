@@ -48,7 +48,7 @@ ENV PATH=/app/venv/bin:$PATH
 # ── PyTorch from Jetson AI Lab wheels ─────────────────────────────────────────
 # Same wheels as bare-metal install; built for JetPack 6 / CUDA 12.6 / Python 3.10.
 RUN pip install --no-cache-dir \
-    --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
+    --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
     torch==2.10.0 \
     torchvision==0.25.0
 
