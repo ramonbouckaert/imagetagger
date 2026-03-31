@@ -98,7 +98,20 @@ ENABLE_SIGLIP   = True  # SigLIP: zero-shot tag classification
 ENABLE_RAM      = True  # RAM++: open-set scene/object tagging
 
 try:
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        DEVICE = "cuda"
+    else:
+        DEVICE = "cpu"
+        # Try to get a specific reason why CUDA isn't available
+        try:
+            torch.cuda.init()
+        except Exception as _cuda_err:
+            logging.warning("CUDA unavailable: %s", _cuda_err)
+        logging.warning(
+            "CUDA not available — running on CPU. "
+            "torch.version.cuda=%s, torch.__version__=%s",
+            torch.version.cuda, torch.__version__,
+        )
 except NameError:
     DEVICE = "cpu"
 
