@@ -37,6 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     libopenblas0 \
     cuda-libraries-12-6 \
+    cuda-cupti-12-6 \
+    libnvjitlink-12-6 \
+    cuda-nvtx-12-6 \
     libcudnn9-cuda-12 \
     libcudnn9-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
