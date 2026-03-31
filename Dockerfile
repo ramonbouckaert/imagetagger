@@ -40,8 +40,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cuda-cupti-12-6 \
     libnvjitlink-12-6 \
     cuda-nvtx-12-6 \
+    libcublas-12-6 \
+    libcufft-12-6 \
+    libcurand-12-6 \
+    libcusolver-12-6 \
+    libcusparse-12-6 \
+    libcusparselt0 \
+    libnvrtc-12-6 \
     libcudnn9-cuda-12 \
-    libcudnn9-dev-cuda-12 \
+    libnccl2 \
+    cudss \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
