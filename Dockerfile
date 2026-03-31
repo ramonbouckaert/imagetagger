@@ -21,11 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     python3-pip \
     python3-venv \
-    libcudnn9 \
-    libcudnn9-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# ── cuDNN 9 ───────────────────────────────────────────────────────────────────
+RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libcudnn9-cuda-12 libcudnn9-dev-cuda-12 \
+    && rm -rf /var/lib/apt/lists/* cuda-keyring_1.1-1_all.deb
 
 # ── cuSPARSELt ────────────────────────────────────────────────────────────────
 # Must be installed via .deb before torch, as the wheel depends on the shared libs.
