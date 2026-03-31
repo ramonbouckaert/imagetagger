@@ -37,6 +37,15 @@ import torch; \
 open('/constraints.txt','w').write(f'torch=={torch.__version__}\n'); \
 print('Pinned:', open('/constraints.txt').read().strip())"
 
+# ── GPU check ─────────────────────────────────────────────────────────────────
+# Fail the build early if CUDA is not accessible. Requires --runtime nvidia
+# (or nvidia set as the default Docker runtime) when running docker compose build.
+RUN python3 -c "\
+import torch, sys; \
+ok = torch.cuda.is_available(); \
+print(f'CUDA available: {ok}  |  torch: {torch.__version__}  |  driver CUDA: {torch.version.cuda}'); \
+sys.exit(0 if ok else 1)"
+
 # ── Model downloads ────────────────────────────────────────────────────────────
 # Install only what's needed to pull models from HuggingFace, before copying
 # requirements.txt — this keeps the large model layers from being invalidated
