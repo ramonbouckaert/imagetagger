@@ -22,16 +22,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     libopenblas0 \
-    libcupti-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# ── cuDNN 9 ───────────────────────────────────────────────────────────────────
+# ── CUDA runtime libraries + cuDNN 9 ──────────────────────────────────────────
+# cuda-libraries-12-6 is a meta-package that pulls in the full set of CUDA 12.6
+# runtime libs (cublas, cufft, curand, cusolver, cusparse, cupti, etc.) that
+# PyTorch links against. cuDNN is installed from the same repo.
 RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
     && dpkg -i cuda-keyring_1.1-1_all.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libcudnn9-cuda-12 libcudnn9-dev-cuda-12 \
+    && apt-get install -y --no-install-recommends \
+        cuda-libraries-12-6 \
+        libcudnn9-cuda-12 \
+        libcudnn9-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/* cuda-keyring_1.1-1_all.deb
 
 # ── cuSPARSELt ────────────────────────────────────────────────────────────────
