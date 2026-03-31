@@ -74,6 +74,18 @@ def _open_image(data: bytes) -> Image.Image:
     return Image.open(io.BytesIO(data))
 
 
+_TYPO_CORRECTIONS = {
+    "dinning table": "dining table",
+}
+
+def _normalise_tag(tag: str) -> str:
+    """Lowercase, strip leading articles, and fix known typos."""
+    tag = tag.lower().strip()
+    tag = re.sub(r'^(a|the)\s+', '', tag)
+    tag = _TYPO_CORRECTIONS.get(tag, tag)
+    return tag
+
+
 def _compile(model):
     """Attempt torch.compile(); silently skip if unavailable (PyTorch < 2.0)."""
     try:
@@ -493,15 +505,23 @@ def analyse():
             wait(futures.values())
 
         florence_results = futures["florence"].result() if "florence" in futures else {}
-        tags = florence_results.get("od", [])
-        seen = {t.lower() for t in tags}
+
+        tags: list[str] = []
+        seen: set[str] = set()
+
+        def _add_tag(raw: str) -> None:
+            norm = _normalise_tag(raw)
+            if norm and norm not in seen:
+                tags.append(norm)
+                seen.add(norm)
+
+        for tag in florence_results.get("od", []):
+            _add_tag(tag)
         for tag in [
             *(futures["siglip"].result() if "siglip" in futures else []),
             *(futures["ram"].result()    if "ram"    in futures else []),
         ]:
-            if tag.lower() not in seen:
-                tags.append(tag)
-                seen.add(tag.lower())
+            _add_tag(tag)
 
         # Keyphrase extraction — runs after Florence since it needs description + OCR.
         # Submitted to the pool to keep inference off the Flask thread.
@@ -512,9 +532,7 @@ def analyse():
             ])).strip()
             if text_input:
                 for tag in _inference_pool.submit(get_keyphrases, text_input).result():
-                    if tag.lower() not in seen:
-                        tags.append(tag)
-                        seen.add(tag.lower())
+                    _add_tag(tag)
 
         return jsonify({
             "tags":        tags,
