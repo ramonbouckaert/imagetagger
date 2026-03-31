@@ -54,7 +54,7 @@ COPY src/requirements.txt .
 # rather than the bundled wheel which may lack the AV1 codec on this platform.
 RUN pip install --no-cache-dir --no-binary pillow-heif -r requirements.txt
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
-&& pip install --no-cache-dir git+https://github.com/xinyu1205/recognize-anything.git
+RUN pip install --no-cache-dir git+https://github.com/xinyu1205/recognize-anything.git
 
 # ── Application ────────────────────────────────────────────────────────────────
 COPY src/server.py .
