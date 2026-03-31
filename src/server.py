@@ -100,7 +100,7 @@ def _compile(model):
 FLORENCE_MODEL       = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 SIGLIP_MODEL_ID      = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
 RAM_CHECKPOINT       = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
-KEYPHRASE_MODEL_ID   = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-distilbert-openkp")
+KEYPHRASE_MODEL_ID   = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
