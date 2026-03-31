@@ -7,6 +7,9 @@
 # Official NVIDIA alternative (requires NGC login): nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.1-py3
 FROM dustynv/pytorch:2.1-r36.2.0
 
+# ── APT mirror ────────────────────────────────────────────────────────────────
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://mirror.aarnet.edu.au/ubuntu-ports|g' /etc/apt/sources.list
+
 # ── System dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
