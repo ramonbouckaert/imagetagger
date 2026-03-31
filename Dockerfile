@@ -43,6 +43,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     python3-pip \
     python3-venv \
     libopenblas0 \
+    libnuma1 \
+    libjpeg-turbo8 \
+    libpng16-16 \
     cuda-libraries-12-6 \
     cuda-cupti-12-6 \
     libnvjitlink-12-6 \
