@@ -338,11 +338,9 @@ siglip_processor    = None
 _siglip_text_inputs = None  # pre-tokenized candidate tags, kept on DEVICE
 
 SIGLIP_CANDIDATE_TAGS = [
-    "man", "cat", "dog", "face", "portrait", "selfie", "group",
-    "screenshot", "meme", "photo", "water", "document", "map", "woman",
-    "spreadsheet", "email", "chat", "electronics", "website", "chart",
-    "code", "text", "sign", "receipt", "book", "car", "building", "room",
-    "furniture", "food", "outdoor", "nature",
+    "screenshot", "meme", "selfie", "portrait", "document", "spreadsheet",
+    "email", "chat", "website", "chart", "code", "receipt", "map", "landscape",
+    "AI-generated", "photo", "text", "sign", "group", "face",
 ]
 
 
