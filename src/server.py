@@ -129,7 +129,7 @@ def _normalise_tag(tag: str) -> list[str]:
     tag = re.sub(r'^(one|same|more|few|fewer|less|several|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
-    if not tag or len(tag) < min_len:
+    if not tag or len(tag) < 3:
         return []
     if tag.startswith("human "):
         suffix = tag[len("human "):]
