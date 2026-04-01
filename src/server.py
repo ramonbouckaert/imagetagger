@@ -109,7 +109,7 @@ _TYPO_CORRECTIONS = {
 _SPACY_CAPTION_BLOCKLIST = {
     "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you",
     "overall", "which", "type", "them", "image", "him", "her", "he", "she", "this", "anything", "side", "who",
-    "themself", "themselves", "other", "others", "atmosphere"
+    "themself", "themselves", "other", "others", "atmosphere", "mood", "scene"
 }
 _SPACY_OCR_BLOCKLIST = {
     "that", "they", "another", "something", "you", "which", "them", "him", "her", "he", "she", "this",
@@ -122,10 +122,11 @@ def _normalise_tag(tag: str) -> list[str]:
     parts = tag.split(" or ")
     if len(parts) > 1:
         return [t for part in parts for t in _normalise_tag(part)]
+    tag = tag.replace(".", " ").strip()
     tag = tag.replace(" - ", "-")
     tag = re.sub(r'^(only|just)\s+', '', tag)
     tag = re.sub(r'^(a|the)\s+', '', tag)
-    tag = re.sub(r'^(one|same|more|few|fewer|less|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
+    tag = re.sub(r'^(one|same|more|few|fewer|less|several|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
     if not tag or len(tag) < 3:
@@ -657,6 +658,9 @@ def analyse():
             ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
 
         cap = florence_results.get("cap", "")
+        for phrase in re.findall(r'"([^"]+)"', cap):
+            _add_tag(phrase)
+
         cap_chunks_future = cap_nouns_future = ocr_nouns_future = None
         if ENABLE_SPACY and spacy_nlp is not None:
             if cap:
