@@ -48,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     libpng16-16 \
     libavif-dev \
     python3-dev \
-    ffmpeg \
+    libvips-dev \
     cuda-libraries-12-6 \
     cuda-cupti-12-6 \
     libnvjitlink-12-6 \

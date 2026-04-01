@@ -3,6 +3,7 @@ flask>=3.0
 
 # Image processing
 pillow>=12.0  # 11.3+ has built-in AVIF support; no plugin needed
+pyvips         # fallback decoder for AVIF files with malformed EXIF metadata
 
 # Deep-learning backend
 # In the JetPack/L4T Docker image, torch and torchvision are pre-installed with

@@ -12,7 +12,6 @@ import os
 import re
 import sys
 import logging
-import subprocess
 import traceback
 import warnings
 import threading
@@ -80,27 +79,16 @@ def _open_image(data: bytes) -> Image.Image:
         # Fallback: decode via ffmpeg, which is lenient about malformed EXIF metadata.
         # Pillow's libavif bails on files with a double-wrapped Exif offset box;
         # ffmpeg ignores the bad metadata and decodes the image anyway.
-        logger.info("Pillow open failed (%s), retrying via ffmpeg", first_err)
+        logger.info("Pillow open failed (%s), retrying via pyvips", first_err)
         try:
-            proc = subprocess.run(
-                ['ffmpeg', '-i', 'pipe:0', '-frames:v', '1',
-                 '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1', '-loglevel', 'error'],
-                input=data, capture_output=True, check=True,
-            )
-            logger.info("ffmpeg fallback succeeded")
-            return Image.open(io.BytesIO(proc.stdout))
-        except subprocess.CalledProcessError as ffmpeg_err:
+            import pyvips
+            vips_img = pyvips.Image.new_from_buffer(data, "")
+            png_bytes = vips_img.write_to_buffer(".png")
+            logger.info("pyvips fallback succeeded")
+            return Image.open(io.BytesIO(png_bytes))
+        except Exception as vips_err:
             header = data[:32].hex(" ")
-            logger.error("ffmpeg fallback failed (exit %d):\n%s",
-                         ffmpeg_err.returncode,
-                         ffmpeg_err.stderr.decode(errors="replace").strip())
-            raise ValueError(
-                f"{first_err} — received {len(data):,} bytes, "
-                f"first 32 bytes (hex): {header}"
-            ) from first_err
-        except Exception as ffmpeg_err:
-            header = data[:32].hex(" ")
-            logger.error("ffmpeg fallback failed: %s", ffmpeg_err)
+            logger.error("pyvips fallback failed: %s", vips_err)
             raise ValueError(
                 f"{first_err} — received {len(data):,} bytes, "
                 f"first 32 bytes (hex): {header}"
