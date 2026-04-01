@@ -563,7 +563,7 @@ def _report_devices() -> None:
     logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
-    logger.info("  Keyphrase  : %s", "ok" if _keyphrase_pipeline is not None else ("disabled" if not ENABLE_KEYPHRASE else "not loaded"))
+    logger.info("  Keyphrase  : %s", _device_of(ENABLE_KEYPHRASE, _keyphrase_pipeline.model if _keyphrase_pipeline is not None else None))
     logger.info("=" * 56)
 
 
