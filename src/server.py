@@ -27,6 +27,7 @@ from flask import Flask, request, jsonify
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", category=FutureWarning, module="fairscale")
+warnings.filterwarnings("ignore", message="Asking to truncate to max_length but no maximum length is provided")
 
 # ── Core imports ───────────────────────────────────────────────────────────────
 _import_errors: list[str] = []
@@ -72,7 +73,18 @@ if _import_errors:
 MODELS_AVAILABLE = len(_import_errors) == 0
 
 def _open_image(data: bytes) -> Image.Image:
-    return Image.open(io.BytesIO(data))
+    if not data:
+        raise ValueError("Empty body — 0 bytes received")
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()  # force full decode; catches truncated files early
+        return img
+    except Exception as e:
+        magic = data[:16].hex(" ")
+        raise ValueError(
+            f"{e} — received {len(data):,} bytes, "
+            f"first 16 bytes (hex): {magic}"
+        ) from e
 
 
 _TYPO_CORRECTIONS = {
