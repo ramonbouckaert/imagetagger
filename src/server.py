@@ -427,7 +427,12 @@ def correct_ocr_text(text: str) -> str:
     if _ocr_correction_pipeline is None or not text.strip():
         return text
     try:
-        result = _ocr_correction_pipeline(text, max_length=len(text) + 10)
+        result = _ocr_correction_pipeline(
+            text,
+            max_new_tokens=len(text.split()) + 10,
+            no_repeat_ngram_size=5,
+            repetition_penalty=2.5,
+        )
         corrected = result[0]["generated_text"].strip()
         logger.debug("OCR correction complete")
         return corrected
