@@ -46,7 +46,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     libnuma1 \
     libjpeg-turbo8 \
     libpng16-16 \
-    libavif-dev \
     cuda-libraries-12-6 \
     cuda-cupti-12-6 \
     libnvjitlink-12-6 \
@@ -85,7 +84,7 @@ RUN pip install --no-cache-dir \
 
 # ── Python dependencies ────────────────────────────────────────────────────────
 COPY src/requirements.txt .
-RUN pip install --no-cache-dir --no-binary pillow-avif-plugin -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
 RUN pip install --no-cache-dir \

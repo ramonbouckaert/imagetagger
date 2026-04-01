@@ -18,12 +18,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 
 from PIL import Image
-_AVIF_PLUGIN_LOADED = False
-try:
-    import pillow_avif  # noqa: F401 — registers AVIF support with Pillow on import
-    _AVIF_PLUGIN_LOADED = True
-except ImportError:
-    logging.warning("pillow-avif-plugin not installed — AVIF images will not be supported")
 from flask import Flask, request, jsonify
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
@@ -78,16 +72,14 @@ def _open_image(data: bytes) -> Image.Image:
     if not data:
         raise ValueError("Empty body — 0 bytes received")
     try:
-        img = Image.open(io.BytesIO(data), formats=["AVIF"])
+        img = Image.open(io.BytesIO(data))
         img.load()  # force full decode; catches truncated files early
         return img
     except Exception as e:
         magic = data[:16].hex(" ")
         raise ValueError(
             f"{e} — received {len(data):,} bytes, "
-            f"first 16 bytes (hex): {magic}, "
-            f"AVIF plugin loaded: {_AVIF_PLUGIN_LOADED}, "
-            f"registered formats: {sorted(Image.registered_extensions().values())}"
+            f"first 16 bytes (hex): {magic}"
         ) from e
 
 
