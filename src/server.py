@@ -108,7 +108,7 @@ _TYPO_CORRECTIONS = {
 
 # Noun chunks containing any of these words are dropped entirely.
 _SPACY_CHUNK_BLOCKLIST = {
-    "that", "foreground", "background", "left", "right", "top", "bottom",
+    "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something"
 }
 
 def _normalise_tag(tag: str) -> str:

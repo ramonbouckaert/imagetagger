@@ -30,7 +30,8 @@ safetensors   # required to load Florence-2 and SigLIP model weights
 accelerate    # used by transformers internals during model loading
 
 # NLP
-spacy>=3.0
+spacy==3.8.0
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # Production server
 gunicorn>=21.0

@@ -21,9 +21,6 @@ download_hf_model "models--google--siglip-so400m-patch14-384"    "google/siglip-
 download_hf_model "models--ml6team--keyphrase-extraction-kbir-openkp"                "ml6team/keyphrase-extraction-kbir-openkp"
 download_hf_model "models--ai-forever--T5-large-spell"                                "ai-forever/T5-large-spell"
 
-python3 -c "import en_core_web_sm" 2>/dev/null \
-    || { echo "[model-init] Downloading spaCy en_core_web_sm ..."; python3 -m spacy download en_core_web_sm; }
-
 RAM_CKPT=/app/checkpoints/ram_plus_swin_large_14m.pth
 if [ -f "$RAM_CKPT" ]; then
     echo "[model-init] RAM++ checkpoint already present, skipping."
