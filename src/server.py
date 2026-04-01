@@ -429,12 +429,18 @@ def get_keyphrases(inputs: list[str]) -> list[str]:
         return []
     try:
         tok = _keyphrase_pipeline.tokenizer
+        sentences = [
+            s.strip()
+            for t in inputs
+            for s in re.split(r"(?<=[.!?])\s+", t)
+            if s.strip()
+        ]
         truncated = [
             tok.decode(
                 tok(t, truncation=True, max_length=512)["input_ids"],
                 skip_special_tokens=True,
             )
-            for t in inputs if t.strip()
+            for t in sentences
         ]
         if not truncated:
             return []
