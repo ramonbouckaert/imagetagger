@@ -106,6 +106,11 @@ _TYPO_CORRECTIONS = {
     "dinning table": "dining table",
 }
 
+# Noun chunks containing any of these words are dropped entirely.
+_SPACY_CHUNK_BLOCKLIST = {
+    "that", "foreground", "background", "left", "right", "top", "bottom",
+}
+
 def _normalise_tag(tag: str) -> str:
     """Lowercase, strip leading articles, and fix known typos."""
     tag = tag.lower().strip()
@@ -533,8 +538,8 @@ def get_noun_chunk_tags(description: str) -> list[str]:
         doc = spacy_nlp(description)
         tags: list[str] = []
         for chunk in doc.noun_chunks:
-            text = " ".join(t.text for t in chunk if t.dep_ != "det").strip().lower()
-            if text:
+            text = " ".join(t.text for t in chunk if t.dep_ not in ("det", "poss")).strip().lower()
+            if text and not _SPACY_CHUNK_BLOCKLIST.intersection(text.split()):
                 tags.append(text)
         logger.debug("spaCy noun chunks complete: %s", tags)
         return tags
