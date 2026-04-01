@@ -282,7 +282,7 @@ def get_florence_ocr(pil_image: Image.Image) -> str:
         logger.warning("Florence-2 model not loaded.")
         return ""
     try:
-        raw = _florence_generate("<OCR>", pil_image, max_new_tokens=512, num_beams=3)
+        raw = _florence_generate("<OCR>", pil_image, max_new_tokens=256, num_beams=3)
         logger.debug("Florence OCR complete")
         return re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
     except Exception:
@@ -607,7 +607,7 @@ def analyse():
 
         def _add_tag(raw: str) -> None:
             norm = _normalise_tag(raw)
-            if norm and norm not in seen:
+            if norm and len(norm) >= 3 and norm not in seen:
                 tags.append(norm)
                 seen.add(norm)
 
