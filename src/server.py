@@ -116,12 +116,12 @@ _SPACY_OCR_BLOCKLIST = {
     "anything", "who", "themself", "themselves", "other", "others"
 }
 
-def _normalise_tag(tag: str, min_len: int = 3) -> list[str]:
+def _normalise_tag(tag: str) -> list[str]:
     """Lowercase, strip leading articles, and fix known typos. Returns 0–n tags."""
     tag = tag.lower().strip()
     parts = tag.split(" or ")
     if len(parts) > 1:
-        return [t for part in parts for t in _normalise_tag(part, min_len)]
+        return [t for part in parts for t in _normalise_tag(part)]
     tag = tag.replace(".", " ").strip()
     tag = tag.replace(" - ", "-")
     tag = re.sub(r'^(only|just|possibly|probably)\s+', '', tag)
@@ -133,7 +133,7 @@ def _normalise_tag(tag: str, min_len: int = 3) -> list[str]:
         return []
     if tag.startswith("human "):
         suffix = tag[len("human "):]
-        return [tag, suffix] if len(suffix) >= min_len else [tag]
+        return [tag, suffix] if len(suffix) >= 3 else [tag]
     return [tag]
 
 
@@ -660,8 +660,8 @@ def analyse():
         tags: list[str] = []
         seen: set[str] = set()
 
-        def _add_tag(raw: str, min_len: int = 3) -> None:
-            for norm in _normalise_tag(raw, min_len):
+        def _add_tag(raw: str) -> None:
+            for norm in _normalise_tag(raw):
                 if norm not in seen:
                     tags.append(norm)
                     seen.add(norm)
@@ -680,17 +680,18 @@ def analyse():
             ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
 
         cap = florence_results.get("cap", "")
-        for phrase in re.findall(r'"([^"]+)"', cap):
-            _add_tag(phrase, min_len=1)
+        cap_quotes = " ".join(re.findall(r'"([^"]+)"', cap))
 
-        cap_chunks_future = cap_nouns_future = ocr_nouns_future = None
+        cap_chunks_future = cap_nouns_future = cap_quotes_future = ocr_nouns_future = None
         if ENABLE_SPACY and spacy_nlp is not None:
             if cap:
                 cap_chunks_future = _inference_pool.submit(get_noun_chunk_tags, cap)
                 cap_nouns_future  = _inference_pool.submit(get_noun_tags, cap)
+            if cap_quotes:
+                cap_quotes_future = _inference_pool.submit(get_word_tags, cap_quotes)
             if ocr_text:
                 ocr_nouns_future  = _inference_pool.submit(get_word_tags, ocr_text)
-        for future in (cap_chunks_future, cap_nouns_future, ocr_nouns_future):
+        for future in (cap_chunks_future, cap_nouns_future, cap_quotes_future, ocr_nouns_future):
             if future:
                 for tag in future.result():
                     _add_tag(tag)
