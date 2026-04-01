@@ -18,8 +18,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 
 from PIL import Image
+_AVIF_PLUGIN_LOADED = False
 try:
     import pillow_avif  # noqa: F401 — registers AVIF support with Pillow on import
+    _AVIF_PLUGIN_LOADED = True
 except ImportError:
     logging.warning("pillow-avif-plugin not installed — AVIF images will not be supported")
 from flask import Flask, request, jsonify
@@ -83,7 +85,9 @@ def _open_image(data: bytes) -> Image.Image:
         magic = data[:16].hex(" ")
         raise ValueError(
             f"{e} — received {len(data):,} bytes, "
-            f"first 16 bytes (hex): {magic}"
+            f"first 16 bytes (hex): {magic}, "
+            f"AVIF plugin loaded: {_AVIF_PLUGIN_LOADED}, "
+            f"registered formats: {sorted(Image.registered_extensions().values())}"
         ) from e
 
 
@@ -460,9 +464,11 @@ def correct_ocr_text(text: str) -> str:
     if _ocr_correction_pipeline is None or not text.strip():
         return text
     try:
+        tok = _ocr_correction_pipeline.tokenizer
+        token_count = len(tok(text)["input_ids"])
         result = _ocr_correction_pipeline(
             [text],
-            max_new_tokens=int(len(text.split()) * 1.5),
+            max_new_tokens=int(token_count * 1.1),
             truncation=True,
             no_repeat_ngram_size=5,
             repetition_penalty=2.5,
