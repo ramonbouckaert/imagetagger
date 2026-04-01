@@ -108,15 +108,20 @@ _TYPO_CORRECTIONS = {
 
 # Noun chunks containing any of these words are dropped entirely.
 _SPACY_CHUNK_BLOCKLIST = {
-    "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something"
+    "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you", "overall"
 }
 
-def _normalise_tag(tag: str) -> str:
-    """Lowercase, strip leading articles, and fix known typos."""
+def _normalise_tag(tag: str) -> list[str]:
+    """Lowercase, strip leading articles, and fix known typos. Returns 0–n tags."""
     tag = tag.lower().strip()
+    parts = tag.split(" or ")
+    if len(parts) > 1:
+        return [t for part in parts for t in _normalise_tag(part)]
+    tag = tag.replace(" - ", "-")
     tag = re.sub(r'^(a|the)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
-    return tag
+    tag = " ".join(t for t in tag.split() if re.search(r'[a-z]{3}', t))
+    return [tag] if len(tag) >= 3 else []
 
 
 def _compile(model):
@@ -661,10 +666,10 @@ def analyse():
         seen: set[str] = set()
 
         def _add_tag(raw: str) -> None:
-            norm = _normalise_tag(raw)
-            if norm and len(norm) >= 3 and norm not in seen:
-                tags.append(norm)
-                seen.add(norm)
+            for norm in _normalise_tag(raw):
+                if norm not in seen:
+                    tags.append(norm)
+                    seen.add(norm)
 
         for tag in florence_results.get("od", []):
             _add_tag(tag)
