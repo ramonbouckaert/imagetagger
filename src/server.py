@@ -127,7 +127,12 @@ def _normalise_tag(tag: str) -> list[str]:
     tag = re.sub(r'^(one|same|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
-    return [tag] if len(tag) >= 3 else []
+    if not tag or len(tag) < 3:
+        return []
+    if tag.startswith("human "):
+        suffix = tag[len("human "):]
+        return [tag, suffix] if len(suffix) >= 3 else [tag]
+    return [tag]
 
 
 def _compile(model):
@@ -651,18 +656,17 @@ def analyse():
             ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
 
         cap = florence_results.get("cap", "")
-        nc_future = nc_ocr_future = None
+        cap_chunks_future = cap_nouns_future = ocr_nouns_future = None
         if ENABLE_SPACY and spacy_nlp is not None:
             if cap:
-                nc_future = _inference_pool.submit(get_noun_chunk_tags, cap)
+                cap_chunks_future = _inference_pool.submit(get_noun_chunk_tags, cap)
+                cap_nouns_future  = _inference_pool.submit(get_noun_tags, cap)
             if ocr_text:
-                nc_ocr_future = _inference_pool.submit(get_noun_tags, ocr_text)
-        if nc_future:
-            for tag in nc_future.result():
-                _add_tag(tag)
-        if nc_ocr_future:
-            for tag in nc_ocr_future.result():
-                _add_tag(tag)
+                ocr_nouns_future  = _inference_pool.submit(get_noun_tags, ocr_text)
+        for future in (cap_chunks_future, cap_nouns_future, ocr_nouns_future):
+            if future:
+                for tag in future.result():
+                    _add_tag(tag)
 
         return jsonify({
             "tags":        tags,
