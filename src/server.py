@@ -394,7 +394,7 @@ def get_keyphrases(text: str) -> list[str]:
     if _keyphrase_pipeline is None or not text.strip():
         return []
     try:
-        results = _keyphrase_pipeline(text)
+        results = _keyphrase_pipeline(text, truncation=True)
         tags = [r["word"].strip() for r in results if r.get("entity_group") == "KEY" and r.get("word", "").strip()]
         logger.debug("Keyphrase extraction complete: %s", tags)
         return tags
