@@ -76,7 +76,7 @@ def _open_image(data: bytes) -> Image.Image:
     if not data:
         raise ValueError("Empty body — 0 bytes received")
     try:
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(data), formats=["AVIF"])
         img.load()  # force full decode; catches truncated files early
         return img
     except Exception as e:
