@@ -499,6 +499,28 @@ def get_noun_chunk_tags(description: str, blocklist: set[str] = _SPACY_CAPTION_B
         return []
 
 
+def get_noun_tags(text: str, blocklist: set[str] = _SPACY_OCR_BLOCKLIST) -> list[str]:
+    """Extract individual lowercased nouns from text."""
+    logger.debug("spaCy noun extraction started")
+    if spacy_nlp is None or not text:
+        return []
+    try:
+        doc = spacy_nlp(text)
+        tags: list[str] = []
+        seen: set[str] = set()
+        for token in doc:
+            if token.pos_ == "NOUN":
+                word = token.text.lower()
+                if word not in blocklist and word not in seen:
+                    tags.append(word)
+                    seen.add(word)
+        logger.debug("spaCy noun extraction complete: %s", tags)
+        return tags
+    except Exception:
+        logger.error("spaCy noun extraction failed:\n%s", traceback.format_exc())
+        return []
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -634,7 +656,7 @@ def analyse():
             if cap:
                 nc_future = _inference_pool.submit(get_noun_chunk_tags, cap)
             if ocr_text:
-                nc_ocr_future = _inference_pool.submit(get_noun_chunk_tags, ocr_text, _SPACY_OCR_BLOCKLIST)
+                nc_ocr_future = _inference_pool.submit(get_noun_tags, ocr_text)
         if nc_future:
             for tag in nc_future.result():
                 _add_tag(tag)
