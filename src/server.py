@@ -123,8 +123,9 @@ def _normalise_tag(tag: str) -> list[str]:
     if len(parts) > 1:
         return [t for part in parts for t in _normalise_tag(part)]
     tag = tag.replace(" - ", "-")
+    tag = re.sub(r'^(only|just)\s+', '', tag)
     tag = re.sub(r'^(a|the)\s+', '', tag)
-    tag = re.sub(r'^(one|same|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
+    tag = re.sub(r'^(one|same|more|few|fewer|less|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
     if not tag or len(tag) < 3:
