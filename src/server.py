@@ -116,24 +116,24 @@ _SPACY_OCR_BLOCKLIST = {
     "anything", "who", "themself", "themselves", "other", "others"
 }
 
-def _normalise_tag(tag: str) -> list[str]:
+def _normalise_tag(tag: str, min_len: int = 3) -> list[str]:
     """Lowercase, strip leading articles, and fix known typos. Returns 0–n tags."""
     tag = tag.lower().strip()
     parts = tag.split(" or ")
     if len(parts) > 1:
-        return [t for part in parts for t in _normalise_tag(part)]
+        return [t for part in parts for t in _normalise_tag(part, min_len)]
     tag = tag.replace(".", " ").strip()
     tag = tag.replace(" - ", "-")
-    tag = re.sub(r'^(only|just)\s+', '', tag)
+    tag = re.sub(r'^(only|just|possibly|probably)\s+', '', tag)
     tag = re.sub(r'^(a|the)\s+', '', tag)
     tag = re.sub(r'^(one|same|more|few|fewer|less|several|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
-    if not tag or len(tag) < 3:
+    if not tag or len(tag) < min_len:
         return []
     if tag.startswith("human "):
         suffix = tag[len("human "):]
-        return [tag, suffix] if len(suffix) >= 3 else [tag]
+        return [tag, suffix] if len(suffix) >= min_len else [tag]
     return [tag]
 
 
@@ -507,7 +507,7 @@ def get_noun_chunk_tags(description: str, blocklist: set[str] = _SPACY_CAPTION_B
 
 
 def get_noun_tags(text: str, blocklist: set[str] = _SPACY_CAPTION_BLOCKLIST) -> list[str]:
-    """Extract individual lowercased nouns from text."""
+    """Extract individual lowercased nouns and proper nouns from text."""
     logger.debug("spaCy noun extraction started")
     if spacy_nlp is None or not text:
         return []
@@ -525,6 +525,28 @@ def get_noun_tags(text: str, blocklist: set[str] = _SPACY_CAPTION_BLOCKLIST) -> 
         return tags
     except Exception:
         logger.error("spaCy noun extraction failed:\n%s", traceback.format_exc())
+        return []
+
+
+def get_word_tags(text: str, blocklist: set[str] = _SPACY_OCR_BLOCKLIST) -> list[str]:
+    """Extract lowercased nouns, proper nouns, adjectives, and verbs from text."""
+    logger.debug("spaCy word extraction started")
+    if spacy_nlp is None or not text:
+        return []
+    try:
+        doc = spacy_nlp(text)
+        tags: list[str] = []
+        seen: set[str] = set()
+        for token in doc:
+            if token.pos_ in ("NOUN", "PROPN", "ADJ", "VERB"):
+                word = token.text.lower()
+                if word not in blocklist and word not in seen:
+                    tags.append(word)
+                    seen.add(word)
+        logger.debug("spaCy word extraction complete: %s", tags)
+        return tags
+    except Exception:
+        logger.error("spaCy word extraction failed:\n%s", traceback.format_exc())
         return []
 
 
@@ -638,8 +660,8 @@ def analyse():
         tags: list[str] = []
         seen: set[str] = set()
 
-        def _add_tag(raw: str) -> None:
-            for norm in _normalise_tag(raw):
+        def _add_tag(raw: str, min_len: int = 3) -> None:
+            for norm in _normalise_tag(raw, min_len):
                 if norm not in seen:
                     tags.append(norm)
                     seen.add(norm)
@@ -659,7 +681,7 @@ def analyse():
 
         cap = florence_results.get("cap", "")
         for phrase in re.findall(r'"([^"]+)"', cap):
-            _add_tag(phrase)
+            _add_tag(phrase, min_len=1)
 
         cap_chunks_future = cap_nouns_future = ocr_nouns_future = None
         if ENABLE_SPACY and spacy_nlp is not None:
@@ -667,7 +689,7 @@ def analyse():
                 cap_chunks_future = _inference_pool.submit(get_noun_chunk_tags, cap)
                 cap_nouns_future  = _inference_pool.submit(get_noun_tags, cap)
             if ocr_text:
-                ocr_nouns_future  = _inference_pool.submit(get_noun_tags, ocr_text, _SPACY_OCR_BLOCKLIST)
+                ocr_nouns_future  = _inference_pool.submit(get_word_tags, ocr_text)
         for future in (cap_chunks_future, cap_nouns_future, ocr_nouns_future):
             if future:
                 for tag in future.result():
