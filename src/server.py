@@ -514,7 +514,7 @@ def get_noun_tags(text: str, blocklist: set[str] = _SPACY_OCR_BLOCKLIST) -> list
         tags: list[str] = []
         seen: set[str] = set()
         for token in doc:
-            if token.pos_ == "NOUN":
+            if token.pos_ in ("NOUN", "PROPN"):
                 word = token.text.lower()
                 if word not in blocklist and word not in seen:
                     tags.append(word)
