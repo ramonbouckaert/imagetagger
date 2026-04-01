@@ -26,6 +26,7 @@ from flask import Flask, request, jsonify
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
+warnings.filterwarnings("ignore", category=FutureWarning, module="fairscale")
 
 # ── Core imports ───────────────────────────────────────────────────────────────
 _import_errors: list[str] = []
@@ -436,7 +437,8 @@ def correct_ocr_text(text: str) -> str:
     try:
         result = _ocr_correction_pipeline(
             text,
-            max_new_tokens=len(text.split()) * 1.25,
+            max_new_tokens=int(len(text.split()) * 1.5),
+            truncation=True,
             no_repeat_ngram_size=5,
             repetition_penalty=2.5,
         )
