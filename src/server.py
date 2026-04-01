@@ -250,6 +250,8 @@ def get_florence_tags(pil_image: Image.Image) -> list[str]:
         return tags
     except Exception:
         logger.error("Florence-2 <OD> failed:\n%s", traceback.format_exc())
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         return []
 
 
@@ -269,6 +271,8 @@ def get_florence_description(pil_image: Image.Image) -> str:
         )
     except Exception:
         logger.error("Florence-2 <MORE_DETAILED_CAPTION> failed:\n%s", traceback.format_exc())
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         return ""
 
 def get_florence_ocr(pil_image: Image.Image) -> str:
@@ -283,6 +287,8 @@ def get_florence_ocr(pil_image: Image.Image) -> str:
         return re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
     except Exception:
         logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         return ""
 
 
@@ -351,6 +357,8 @@ def get_siglip_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return [tag for tag, p in zip(SIGLIP_CANDIDATE_TAGS, probs) if p >= threshold]
     except Exception:
         logger.error("SigLIP inference failed:\n%s", traceback.format_exc())
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         return []
 
 
@@ -387,6 +395,8 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return [t.strip() for t in tags_str.split("|") if t.strip()]
     except Exception:
         logger.error("RAM++ inference failed:\n%s", traceback.format_exc())
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
         return []
 
 

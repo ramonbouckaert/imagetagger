@@ -21,5 +21,5 @@ services:
       - RAM_CHECKPOINT=/app/checkpoints/ram_plus_swin_large_14m.pth
       - NVIDIA_VISIBLE_DEVICES=all
       - LOG_LEVEL=INFO
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     restart: unless-stopped
-
