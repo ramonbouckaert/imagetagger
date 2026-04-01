@@ -440,7 +440,7 @@ def get_keyphrases(inputs: list[str]) -> list[str]:
             return []
         tags: list[str] = []
         seen: set[str] = set()
-        for per_text in _keyphrase_pipeline(truncated):
+        for per_text in _keyphrase_pipeline(truncated, threshold=0.0):
             for r in per_text:
                 word = r.get("word", "").strip()
                 if r.get("entity_group") == "KEY" and word and word not in seen:
