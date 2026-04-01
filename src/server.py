@@ -97,10 +97,11 @@ def _compile(model):
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-FLORENCE_MODEL       = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
-SIGLIP_MODEL_ID      = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
-RAM_CHECKPOINT       = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
-KEYPHRASE_MODEL_ID   = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
+FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
+SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
+RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
+KEYPHRASE_MODEL_ID      = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
+OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "oliverguhr/spelling-correction-english-base")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
@@ -108,10 +109,11 @@ RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 
 # ── Model enable flags ─────────────────────────────────────────────────────────
 # Set any to False to skip loading and running that model entirely.
-ENABLE_FLORENCE  = True  # Florence-2: OD tags, image description, OCR
-ENABLE_SIGLIP    = True  # SigLIP: zero-shot tag classification
-ENABLE_RAM       = True  # RAM++: open-set scene/object tagging
-ENABLE_KEYPHRASE = True  # Extractive keyphrase extraction from description and OCR text
+ENABLE_FLORENCE       = True  # Florence-2: OD tags, image description, OCR
+ENABLE_SIGLIP         = True  # SigLIP: zero-shot tag classification
+ENABLE_RAM            = True  # RAM++: open-set scene/object tagging
+ENABLE_KEYPHRASE      = True  # Extractive keyphrase extraction from description and OCR text
+ENABLE_OCR_CORRECTION = True  # Spell-correct OCR output (T5 seq2seq)
 
 try:
     if torch.cuda.is_available():
@@ -401,6 +403,39 @@ def get_keyphrases(text: str) -> list[str]:
         return []
 
 
+# ── OCR spell correction ───────────────────────────────────────────────────────
+_ocr_correction_pipeline = None
+
+
+def load_ocr_correction_model() -> None:
+    global _ocr_correction_pipeline
+    if not MODELS_AVAILABLE or not ENABLE_OCR_CORRECTION:
+        return
+    logger.info("Loading OCR correction model (%s) on %s ...", OCR_CORRECTION_MODEL_ID, DEVICE)
+    device_id = 0 if DEVICE == "cuda" else -1
+    _ocr_correction_pipeline = hf_pipeline(
+        "text2text-generation",
+        model=OCR_CORRECTION_MODEL_ID,
+        device=device_id,
+    )
+    logger.info("OCR correction model loaded.")
+
+
+def correct_ocr_text(text: str) -> str:
+    """Return spell-corrected version of OCR text; falls back to original on error."""
+    logger.debug("OCR correction started")
+    if _ocr_correction_pipeline is None or not text.strip():
+        return text
+    try:
+        result = _ocr_correction_pipeline(text, max_length=len(text) + 64)
+        corrected = result[0]["generated_text"].strip()
+        logger.debug("OCR correction complete")
+        return corrected
+    except Exception:
+        logger.error("OCR correction failed:\n%s", traceback.format_exc())
+        return text
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -415,7 +450,8 @@ def health():
             "florence": _status(ENABLE_FLORENCE, florence_model   is not None),
             "siglip":   _status(ENABLE_SIGLIP,   siglip_model     is not None),
             "ram":      _status(ENABLE_RAM,       ram_model        is not None),
-            "keyphrase": _status(ENABLE_KEYPHRASE, _keyphrase_pipeline is not None),
+            "keyphrase":      _status(ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
+            "ocr_correction": _status(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
         },
         "device":          DEVICE,
         "max_concurrency": MAX_CONCURRENCY,
@@ -439,7 +475,8 @@ def analyse():
             ("Florence-2",       ENABLE_FLORENCE, florence_model   is not None),
             ("SigLIP",           ENABLE_SIGLIP,   siglip_model     is not None),
             ("RAM++",            ENABLE_RAM,      ram_model        is not None),
-            ("Keyphrase extraction", ENABLE_KEYPHRASE, _keyphrase_pipeline is not None),
+            ("Keyphrase extraction", ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
+            ("OCR correction",       ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
         ] if enabled and not loaded
     ]
     if not_loaded:
@@ -523,12 +560,18 @@ def analyse():
         ]:
             _add_tag(tag)
 
+        # OCR spell correction — runs after Florence OCR.
+        ocr_text = florence_results.get("ocr", "")
+        if ENABLE_OCR_CORRECTION and _ocr_correction_pipeline is not None and ocr_text:
+            ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
+
         # Keyphrase extraction — runs after Florence since it needs description + OCR.
+        # Uses corrected OCR text so keyphrases benefit from the correction.
         # Submitted to the pool to keep inference off the Flask thread.
         if ENABLE_KEYPHRASE and _keyphrase_pipeline is not None:
             text_input = " ".join(filter(None, [
                 florence_results.get("cap", ""),
-                florence_results.get("ocr", ""),
+                ocr_text,
             ])).strip()
             if text_input:
                 for tag in _inference_pool.submit(get_keyphrases, text_input).result():
@@ -537,7 +580,7 @@ def analyse():
         return jsonify({
             "tags":        tags,
             "description": florence_results.get("cap", ""),
-            "text":        florence_results.get("ocr", ""),
+            "text":        ocr_text,
         })
 
     finally:
@@ -563,7 +606,8 @@ def _report_devices() -> None:
     logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
-    logger.info("  Keyphrase  : %s", _device_of(ENABLE_KEYPHRASE, _keyphrase_pipeline.model if _keyphrase_pipeline is not None else None))
+    logger.info("  Keyphrase  : %s", _device_of(ENABLE_KEYPHRASE,      _keyphrase_pipeline.model      if _keyphrase_pipeline      is not None else None))
+    logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline.model if _ocr_correction_pipeline is not None else None))
     logger.info("=" * 56)
 
 
@@ -572,6 +616,7 @@ load_florence_model()
 load_siglip_model()
 load_ram_model()
 load_keyphrase_model()
+load_ocr_correction_model()
 _report_devices()
 
 # ── Entry point ────────────────────────────────────────────────────────────────

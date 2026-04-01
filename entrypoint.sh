@@ -18,7 +18,8 @@ download_hf_model() {
 
 download_hf_model "models--microsoft--Florence-2-large"          "microsoft/Florence-2-large"
 download_hf_model "models--google--siglip-so400m-patch14-384"    "google/siglip-so400m-patch14-384"
-download_hf_model "models--ml6team--keyphrase-extraction-kbir-openkp" "ml6team/keyphrase-extraction-kbir-openkp"
+download_hf_model "models--ml6team--keyphrase-extraction-kbir-openkp"                "ml6team/keyphrase-extraction-kbir-openkp"
+download_hf_model "models--oliverguhr--spelling-correction-english-base"              "oliverguhr/spelling-correction-english-base"
 
 RAM_CKPT=/app/checkpoints/ram_plus_swin_large_14m.pth
 if [ -f "$RAM_CKPT" ]; then
