@@ -396,7 +396,10 @@ def get_keyphrases(text: str) -> list[str]:
     if _keyphrase_pipeline is None or not text.strip():
         return []
     try:
-        results = _keyphrase_pipeline(text, truncation=True)
+        words = text.split()
+        if len(words) > 400:
+            text = " ".join(words[:400])
+        results = _keyphrase_pipeline(text)
         tags = [r["word"].strip() for r in results if r.get("entity_group") == "KEY" and r.get("word", "").strip()]
         logger.debug("Keyphrase extraction complete: %s", tags)
         return tags
@@ -433,7 +436,7 @@ def correct_ocr_text(text: str) -> str:
     try:
         result = _ocr_correction_pipeline(
             text,
-            max_new_tokens=len(text.split()) + 10,
+            max_new_tokens=len(text.split()) * 1.25,
             no_repeat_ngram_size=5,
             repetition_penalty=2.5,
         )
