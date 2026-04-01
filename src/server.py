@@ -57,6 +57,13 @@ except Exception as _ram_import_err:
         exc_info=True,
     )
 
+try:
+    import spacy as _spacy
+    _SPACY_AVAILABLE = True
+except ImportError as _spacy_import_err:
+    _SPACY_AVAILABLE = False
+    logging.warning("spacy unavailable — noun chunk tags will be disabled. Install with: %s -m pip install spacy && python -m spacy download en_core_web_sm", sys.executable)
+
 if _import_errors:
     logging.warning(
         "Some models will be unavailable. Failed imports:\n%s\n"
@@ -122,6 +129,7 @@ FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2
 SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
 RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
 KEYPHRASE_MODEL_ID      = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
+SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "ai-forever/T5-large-spell")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
@@ -135,6 +143,7 @@ ENABLE_SIGLIP         = True  # SigLIP: zero-shot tag classification
 ENABLE_RAM            = True  # RAM++: open-set scene/object tagging
 ENABLE_KEYPHRASE      = True  # Extractive keyphrase extraction from description and OCR text
 ENABLE_OCR_CORRECTION = True  # Spell-correct OCR output (T5 seq2seq)
+ENABLE_SPACY          = True  # spaCy noun chunk extraction from Florence-2 description
 
 try:
     if torch.cuda.is_available():
@@ -502,6 +511,38 @@ def correct_ocr_text(text: str) -> str:
         return text
 
 
+# ── spaCy noun chunks ──────────────────────────────────────────────────────────
+spacy_nlp = None
+
+
+def load_spacy_model() -> None:
+    global spacy_nlp
+    if not _SPACY_AVAILABLE or not ENABLE_SPACY:
+        return
+    logger.info("Loading spaCy model (%s) ...", SPACY_MODEL)
+    spacy_nlp = _spacy.load(SPACY_MODEL)
+    logger.info("spaCy model loaded.")
+
+
+def get_noun_chunk_tags(description: str) -> list[str]:
+    """Extract lowercased noun chunks from description, stripping determiners."""
+    logger.debug("spaCy noun chunks started")
+    if spacy_nlp is None or not description:
+        return []
+    try:
+        doc = spacy_nlp(description)
+        tags: list[str] = []
+        for chunk in doc.noun_chunks:
+            text = " ".join(t.text for t in chunk if t.dep_ != "det").strip().lower()
+            if text:
+                tags.append(text)
+        logger.debug("spaCy noun chunks complete: %s", tags)
+        return tags
+    except Exception:
+        logger.error("spaCy noun chunk extraction failed:\n%s", traceback.format_exc())
+        return []
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -518,6 +559,7 @@ def health():
             "ram":      _status(ENABLE_RAM,       ram_model        is not None),
             "keyphrase":      _status(ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
             "ocr_correction": _status(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
+            "spacy":          _status(ENABLE_SPACY,          spacy_nlp                is not None),
         },
         "device":          DEVICE,
         "max_concurrency": MAX_CONCURRENCY,
@@ -543,6 +585,7 @@ def analyse():
             ("RAM++",            ENABLE_RAM,      ram_model        is not None),
             ("Keyphrase extraction", ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
             ("OCR correction",       ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
+            ("spaCy",                ENABLE_SPACY,          spacy_nlp                is not None),
         ] if enabled and not loaded
     ]
     if not_loaded:
@@ -631,14 +674,23 @@ def analyse():
         if ENABLE_OCR_CORRECTION and _ocr_correction_pipeline is not None and ocr_text:
             ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
 
-        # Keyphrase extraction — runs after Florence since it needs description + OCR.
+        # Keyphrase extraction and noun chunk extraction run concurrently —
+        # both need the Florence description, which is available at this point.
         # Uses corrected OCR text so keyphrases benefit from the correction.
-        # Submitted to the pool to keep inference off the Flask thread.
+        cap = florence_results.get("cap", "")
+        kp_future = nc_future = None
         if ENABLE_KEYPHRASE and _keyphrase_pipeline is not None:
-            kp_inputs = [t for t in [florence_results.get("cap", ""), ocr_text] if t.strip()]
+            kp_inputs = [t for t in [cap, ocr_text] if t.strip()]
             if kp_inputs:
-                for tag in _inference_pool.submit(get_keyphrases, kp_inputs).result():
-                    _add_tag(tag)
+                kp_future = _inference_pool.submit(get_keyphrases, kp_inputs)
+        if ENABLE_SPACY and spacy_nlp is not None and cap:
+            nc_future = _inference_pool.submit(get_noun_chunk_tags, cap)
+        if kp_future:
+            for tag in kp_future.result():
+                _add_tag(tag)
+        if nc_future:
+            for tag in nc_future.result():
+                _add_tag(tag)
 
         return jsonify({
             "tags":        tags,
@@ -671,6 +723,7 @@ def _report_devices() -> None:
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
     logger.info("  Keyphrase  : %s", _device_of(ENABLE_KEYPHRASE,      _keyphrase_pipeline.model      if _keyphrase_pipeline      is not None else None))
     logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline.model if _ocr_correction_pipeline is not None else None))
+    logger.info("  spaCy      : %s", "cpu" if spacy_nlp is not None else ("disabled" if not ENABLE_SPACY else "not loaded"))
     logger.info("=" * 56)
 
 
@@ -680,6 +733,7 @@ load_siglip_model()
 load_ram_model()
 load_keyphrase_model()
 load_ocr_correction_model()
+load_spacy_model()
 _report_devices()
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -29,5 +29,8 @@ protobuf      # required by SigLIP's tokenizer
 safetensors   # required to load Florence-2 and SigLIP model weights
 accelerate    # used by transformers internals during model loading
 
+# NLP
+spacy>=3.0
+
 # Production server
 gunicorn>=21.0
