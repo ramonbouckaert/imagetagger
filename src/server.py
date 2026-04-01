@@ -284,7 +284,8 @@ def get_florence_ocr(pil_image: Image.Image) -> str:
     try:
         raw = _florence_generate("<OCR>", pil_image, max_new_tokens=256, num_beams=3)
         logger.debug("Florence OCR complete")
-        return re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
+        text = re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
+        return text if re.search(r"[a-zA-Z0-9]", text) else ""
     except Exception:
         logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
         if DEVICE == "cuda":
