@@ -467,7 +467,7 @@ def correct_ocr_text(text: str) -> str:
             no_repeat_ngram_size=5,
             repetition_penalty=2.5,
         )
-        corrected = result[0][0]["generated_text"].strip()
+        corrected = result[0]["generated_text"].strip()
         logger.debug("OCR correction complete")
         return corrected
     except Exception:
