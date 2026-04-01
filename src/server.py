@@ -505,7 +505,7 @@ def get_noun_chunk_tags(description: str, blocklist: set[str] = _SPACY_CAPTION_B
         return []
 
 
-def get_noun_tags(text: str, blocklist: set[str] = _SPACY_OCR_BLOCKLIST) -> list[str]:
+def get_noun_tags(text: str, blocklist: set[str] = _SPACY_CAPTION_BLOCKLIST) -> list[str]:
     """Extract individual lowercased nouns from text."""
     logger.debug("spaCy noun extraction started")
     if spacy_nlp is None or not text:
@@ -663,7 +663,7 @@ def analyse():
                 cap_chunks_future = _inference_pool.submit(get_noun_chunk_tags, cap)
                 cap_nouns_future  = _inference_pool.submit(get_noun_tags, cap)
             if ocr_text:
-                ocr_nouns_future  = _inference_pool.submit(get_noun_tags, ocr_text)
+                ocr_nouns_future  = _inference_pool.submit(get_noun_tags, ocr_text, _SPACY_OCR_BLOCKLIST)
         for future in (cap_chunks_future, cap_nouns_future, ocr_nouns_future):
             if future:
                 for tag in future.result():
