@@ -75,12 +75,26 @@ def _open_image(data: bytes) -> Image.Image:
         img = Image.open(io.BytesIO(data))
         img.load()  # force full decode; catches truncated files early
         return img
-    except Exception as e:
-        magic = data[:16].hex(" ")
-        raise ValueError(
-            f"{e} — received {len(data):,} bytes, "
-            f"first 16 bytes (hex): {magic}"
-        ) from e
+    except Exception as first_err:
+        logger.debug("Initial open failed (%s), retrying after stripping metadata", first_err)
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            # Re-encode to a clean PNG buffer, which drops all EXIF/metadata
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            return Image.open(buf)
+        except Exception:
+            magic = data[:16].hex(" ")
+            raise ValueError(
+                f"{first_err} — received {len(data):,} bytes, "
+                f"first 16 bytes (hex): {magic}"
+            ) from first_err
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = False
 
 
 _TYPO_CORRECTIONS = {
