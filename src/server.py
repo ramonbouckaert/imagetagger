@@ -379,11 +379,13 @@ def load_keyphrase_model() -> None:
         return
     logger.info("Loading keyphrase extraction model (%s) on %s ...", KEYPHRASE_MODEL_ID, DEVICE)
     device_id = 0 if DEVICE == "cuda" else -1
+    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     _keyphrase_pipeline = hf_pipeline(
         "token-classification",
         model=KEYPHRASE_MODEL_ID,
         aggregation_strategy="simple",
         device=device_id,
+        model_kwargs={"torch_dtype": dtype},
     )
     logger.info("Keyphrase extraction model loaded.")
 
@@ -413,10 +415,12 @@ def load_ocr_correction_model() -> None:
         return
     logger.info("Loading OCR correction model (%s) on %s ...", OCR_CORRECTION_MODEL_ID, DEVICE)
     device_id = 0 if DEVICE == "cuda" else -1
+    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     _ocr_correction_pipeline = hf_pipeline(
         "text2text-generation",
         model=OCR_CORRECTION_MODEL_ID,
         device=device_id,
+        model_kwargs={"torch_dtype": dtype},
     )
     logger.info("OCR correction model loaded.")
 
