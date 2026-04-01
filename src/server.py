@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import logging
+import subprocess
 import traceback
 import warnings
 import threading
@@ -76,25 +77,23 @@ def _open_image(data: bytes) -> Image.Image:
         img.load()  # force full decode; catches truncated files early
         return img
     except Exception as first_err:
-        logger.debug("Initial open failed (%s), retrying after stripping metadata", first_err)
-        from PIL import ImageFile
-        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        # Fallback: decode via ffmpeg, which is lenient about malformed EXIF metadata.
+        # Pillow's libavif bails on files with a double-wrapped Exif offset box;
+        # ffmpeg ignores the bad metadata and decodes the image anyway.
+        logger.debug("Pillow open failed (%s), retrying via ffmpeg", first_err)
         try:
-            img = Image.open(io.BytesIO(data))
-            img.load()
-            # Re-encode to a clean PNG buffer, which drops all EXIF/metadata
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            buf.seek(0)
-            return Image.open(buf)
+            proc = subprocess.run(
+                ['ffmpeg', '-i', 'pipe:0', '-frames:v', '1',
+                 '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1', '-loglevel', 'error'],
+                input=data, capture_output=True, check=True,
+            )
+            return Image.open(io.BytesIO(proc.stdout))
         except Exception:
-            magic = data[:16].hex(" ")
+            header = data[:32].hex(" ")
             raise ValueError(
                 f"{first_err} — received {len(data):,} bytes, "
-                f"first 16 bytes (hex): {magic}"
+                f"first 32 bytes (hex): {header}"
             ) from first_err
-        finally:
-            ImageFile.LOAD_TRUNCATED_IMAGES = False
 
 
 _TYPO_CORRECTIONS = {
