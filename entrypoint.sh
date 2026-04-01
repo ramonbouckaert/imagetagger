@@ -18,7 +18,6 @@ download_hf_model() {
 
 download_hf_model "models--microsoft--Florence-2-large"          "microsoft/Florence-2-large"
 download_hf_model "models--google--siglip-so400m-patch14-384"    "google/siglip-so400m-patch14-384"
-download_hf_model "models--ml6team--keyphrase-extraction-kbir-openkp"                "ml6team/keyphrase-extraction-kbir-openkp"
 download_hf_model "models--yelpfeast--byt5-base-english-ocr-correction"               "yelpfeast/byt5-base-english-ocr-correction"
 
 RAM_CKPT=/app/checkpoints/ram_plus_swin_large_14m.pth

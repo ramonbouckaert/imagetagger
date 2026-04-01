@@ -2,7 +2,6 @@
 Image Analysis Server
 - Uses Florence-2 for image tagging (OD), description, and OCR
 - Uses RAM++ and SigLIP as additional tagging passes, results merged
-- Uses extractive keyphrase extraction to pull additional tags from description and OCR text
 - Request queue with configurable max concurrency to prevent OOM
 - Exposes POST /analyse and GET /health
 """
@@ -107,9 +106,14 @@ _TYPO_CORRECTIONS = {
 }
 
 # Noun chunks containing any of these words are dropped entirely.
-_SPACY_CHUNK_BLOCKLIST = {
+_SPACY_CAPTION_BLOCKLIST = {
     "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you",
-    "overall", "which", "type", "them", "image", "him", "her", "he", "she", "this", "anything", "side",
+    "overall", "which", "type", "them", "image", "him", "her", "he", "she", "this", "anything", "side", "who",
+    "themself", "themselves", "other", "others", "atmosphere"
+}
+_SPACY_OCR_BLOCKLIST = {
+    "that", "they", "another", "something", "you", "which", "them", "him", "her", "he", "she", "this",
+    "anything", "who", "themself", "themselves", "other", "others"
 }
 
 def _normalise_tag(tag: str) -> list[str]:
@@ -119,7 +123,8 @@ def _normalise_tag(tag: str) -> list[str]:
     if len(parts) > 1:
         return [t for part in parts for t in _normalise_tag(part)]
     tag = tag.replace(" - ", "-")
-    tag = re.sub(r'^(a|the|one)\s+', '', tag)
+    tag = re.sub(r'^(a|the)\s+', '', tag)
+    tag = re.sub(r'^(one|same|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
     tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
     return [tag] if len(tag) >= 3 else []
@@ -139,7 +144,6 @@ def _compile(model):
 FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
 RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
-KEYPHRASE_MODEL_ID      = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
 SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
@@ -152,7 +156,6 @@ RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
 ENABLE_FLORENCE       = True  # Florence-2: OD tags, image description, OCR
 ENABLE_SIGLIP         = True  # SigLIP: zero-shot tag classification
 ENABLE_RAM            = True  # RAM++: open-set scene/object tagging
-ENABLE_KEYPHRASE      = True  # Extractive keyphrase extraction from description and OCR text
 ENABLE_OCR_CORRECTION = True  # Spell-correct OCR output (ByT5 seq2seq)
 ENABLE_SPACY          = True  # spaCy noun chunk extraction from Florence-2 description
 
@@ -421,62 +424,6 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
         return []
 
 
-# ── Keyphrase extraction ───────────────────────────────────────────────────────
-_keyphrase_pipeline = None
-
-
-def load_keyphrase_model() -> None:
-    global _keyphrase_pipeline
-    if not MODELS_AVAILABLE or not ENABLE_KEYPHRASE:
-        return
-    logger.info("Loading keyphrase extraction model (%s) on %s ...", KEYPHRASE_MODEL_ID, DEVICE)
-    device_id = 0 if DEVICE == "cuda" else -1
-    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    _keyphrase_pipeline = hf_pipeline(
-        "token-classification",
-        model=KEYPHRASE_MODEL_ID,
-        aggregation_strategy="simple",
-        device=device_id,
-        model_kwargs={"torch_dtype": dtype},
-    )
-    logger.info("Keyphrase extraction model loaded.")
-
-
-def get_keyphrases(inputs: list[str]) -> list[str]:
-    """Extract keyphrases from a list of texts using token classification."""
-    logger.debug("Keyphrase extraction started")
-    if _keyphrase_pipeline is None:
-        return []
-    try:
-        tok = _keyphrase_pipeline.tokenizer
-        sentences = [
-            s.strip()
-            for t in inputs
-            for s in re.split(r"(?<=[.!?])\s+", t)
-            if s.strip()
-        ]
-        truncated = [
-            tok.decode(
-                tok(t, truncation=True, max_length=512)["input_ids"],
-                skip_special_tokens=True,
-            )
-            for t in sentences
-        ]
-        if not truncated:
-            return []
-        tags: list[str] = []
-        seen: set[str] = set()
-        for per_text in _keyphrase_pipeline(truncated):
-            for r in per_text:
-                word = r.get("word", "").strip()
-                if r.get("entity_group") == "KEY" and word and word not in seen:
-                    tags.append(word)
-                    seen.add(word)
-        logger.debug("Keyphrase extraction complete: %s", tags)
-        return tags
-    except Exception:
-        logger.error("Keyphrase extraction failed:\n%s", traceback.format_exc())
-        return []
 
 
 # ── OCR spell correction ───────────────────────────────────────────────────────
@@ -533,7 +480,7 @@ def load_spacy_model() -> None:
     logger.info("spaCy model loaded.")
 
 
-def get_noun_chunk_tags(description: str) -> list[str]:
+def get_noun_chunk_tags(description: str, blocklist: set[str] = _SPACY_CAPTION_BLOCKLIST) -> list[str]:
     """Extract lowercased noun chunks from description, stripping determiners."""
     logger.debug("spaCy noun chunks started")
     if spacy_nlp is None or not description:
@@ -543,7 +490,7 @@ def get_noun_chunk_tags(description: str) -> list[str]:
         tags: list[str] = []
         for chunk in doc.noun_chunks:
             text = " ".join(t.text for t in chunk if t.dep_ not in ("det", "poss")).strip().lower()
-            if text and not _SPACY_CHUNK_BLOCKLIST.intersection(text.split()):
+            if text and not blocklist.intersection(text.split()):
                 tags.append(text)
         logger.debug("spaCy noun chunks complete: %s", tags)
         return tags
@@ -566,7 +513,6 @@ def health():
             "florence": _status(ENABLE_FLORENCE, florence_model   is not None),
             "siglip":   _status(ENABLE_SIGLIP,   siglip_model     is not None),
             "ram":      _status(ENABLE_RAM,       ram_model        is not None),
-            "keyphrase":      _status(ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
             "ocr_correction": _status(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
             "spacy":          _status(ENABLE_SPACY,          spacy_nlp                is not None),
         },
@@ -592,7 +538,6 @@ def analyse():
             ("Florence-2",       ENABLE_FLORENCE, florence_model   is not None),
             ("SigLIP",           ENABLE_SIGLIP,   siglip_model     is not None),
             ("RAM++",            ENABLE_RAM,      ram_model        is not None),
-            ("Keyphrase extraction", ENABLE_KEYPHRASE,      _keyphrase_pipeline      is not None),
             ("OCR correction",       ENABLE_OCR_CORRECTION, _ocr_correction_pipeline is not None),
             ("spaCy",                ENABLE_SPACY,          spacy_nlp                is not None),
         ] if enabled and not loaded
@@ -683,22 +628,18 @@ def analyse():
         if ENABLE_OCR_CORRECTION and _ocr_correction_pipeline is not None and ocr_text:
             ocr_text = _inference_pool.submit(correct_ocr_text, ocr_text).result()
 
-        # Keyphrase extraction and noun chunk extraction run concurrently —
-        # both need the Florence description, which is available at this point.
-        # Uses corrected OCR text so keyphrases benefit from the correction.
         cap = florence_results.get("cap", "")
-        kp_future = nc_future = None
-        if ENABLE_KEYPHRASE and _keyphrase_pipeline is not None:
-            kp_inputs = [t for t in [cap, ocr_text] if t.strip()]
-            if kp_inputs:
-                kp_future = _inference_pool.submit(get_keyphrases, kp_inputs)
-        if ENABLE_SPACY and spacy_nlp is not None and cap:
-            nc_future = _inference_pool.submit(get_noun_chunk_tags, cap)
-        if kp_future:
-            for tag in kp_future.result():
-                _add_tag(tag)
+        nc_future = nc_ocr_future = None
+        if ENABLE_SPACY and spacy_nlp is not None:
+            if cap:
+                nc_future = _inference_pool.submit(get_noun_chunk_tags, cap)
+            if ocr_text:
+                nc_ocr_future = _inference_pool.submit(get_noun_chunk_tags, ocr_text, _SPACY_OCR_BLOCKLIST)
         if nc_future:
             for tag in nc_future.result():
+                _add_tag(tag)
+        if nc_ocr_future:
+            for tag in nc_ocr_future.result():
                 _add_tag(tag)
 
         return jsonify({
@@ -730,7 +671,6 @@ def _report_devices() -> None:
     logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
-    logger.info("  Keyphrase  : %s", _device_of(ENABLE_KEYPHRASE,      _keyphrase_pipeline.model      if _keyphrase_pipeline      is not None else None))
     logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline.model if _ocr_correction_pipeline is not None else None))
     logger.info("  spaCy      : %s", "cpu" if spacy_nlp is not None else ("disabled" if not ENABLE_SPACY else "not loaded"))
     logger.info("=" * 56)
@@ -740,7 +680,6 @@ def _report_devices() -> None:
 load_florence_model()
 load_siglip_model()
 load_ram_model()
-load_keyphrase_model()
 load_ocr_correction_model()
 load_spacy_model()
 _report_devices()
