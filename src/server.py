@@ -108,7 +108,8 @@ _TYPO_CORRECTIONS = {
 
 # Noun chunks containing any of these words are dropped entirely.
 _SPACY_CHUNK_BLOCKLIST = {
-    "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you", "overall"
+    "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you",
+    "overall", "which", "type", "them", "image", "him", "her", "he", "she", "this", "anything", "side",
 }
 
 def _normalise_tag(tag: str) -> list[str]:
@@ -118,9 +119,9 @@ def _normalise_tag(tag: str) -> list[str]:
     if len(parts) > 1:
         return [t for part in parts for t in _normalise_tag(part)]
     tag = tag.replace(" - ", "-")
-    tag = re.sub(r'^(a|the)\s+', '', tag)
+    tag = re.sub(r'^(a|the|one)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
-    tag = " ".join(t for t in tag.split() if re.search(r'[a-z]{3}', t))
+    tag = " ".join(t for t in tag.split() if re.search(r'[a-zA-Z0-9]{3}', t))
     return [tag] if len(tag) >= 3 else []
 
 
@@ -140,7 +141,7 @@ SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-p
 RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
 KEYPHRASE_MODEL_ID      = os.environ.get("KEYPHRASE_MODEL", "ml6team/keyphrase-extraction-kbir-openkp")
 SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
-OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "ai-forever/T5-large-spell")
+OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
@@ -152,7 +153,7 @@ ENABLE_FLORENCE       = True  # Florence-2: OD tags, image description, OCR
 ENABLE_SIGLIP         = True  # SigLIP: zero-shot tag classification
 ENABLE_RAM            = True  # RAM++: open-set scene/object tagging
 ENABLE_KEYPHRASE      = True  # Extractive keyphrase extraction from description and OCR text
-ENABLE_OCR_CORRECTION = True  # Spell-correct OCR output (T5 seq2seq)
+ENABLE_OCR_CORRECTION = True  # Spell-correct OCR output (ByT5 seq2seq)
 ENABLE_SPACY          = True  # spaCy noun chunk extraction from Florence-2 description
 
 try:
@@ -510,8 +511,6 @@ def correct_ocr_text(text: str) -> str:
             [text],
             max_new_tokens=int(token_count * 1.1),
             truncation=True,
-            no_repeat_ngram_size=5,
-            repetition_penalty=2.5,
         )
         corrected = result[0]["generated_text"].strip()
         logger.debug("OCR correction complete")
