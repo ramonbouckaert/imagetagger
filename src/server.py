@@ -155,8 +155,8 @@ SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
-SIGLIP_TAG_THRESHOLD = float(os.environ.get("SIGLIP_TAG_THRESHOLD", "0.1"))
-RAM_TAG_THRESHOLD    = float(os.environ.get("RAM_TAG_THRESHOLD", "0.68"))
+SIGLIP_TAG_THRESHOLD = 0.05
+RAM_TAG_THRESHOLD    = 0.68
 
 # ── Model enable flags ─────────────────────────────────────────────────────────
 # Set any to False to skip loading and running that model entirely.
@@ -577,10 +577,6 @@ def analyse():
     """
     Accepts an image via multipart/form-data (field: "image") or raw binary body.
 
-    Optional query parameters:
-      tag_confidence  float 0-1  minimum SigLIP confidence for secondary tags
-                                 (default: SIGLIP_TAG_THRESHOLD env var, default 0.1)
-
     Returns 503 if any model has not finished loading.
     Returns 429 if MAX_CONCURRENCY active requests are already running.
     """
@@ -599,19 +595,8 @@ def analyse():
             "not_loaded": not_loaded,
         }), 503
 
-    tag_confidence_str = request.args.get("tag_confidence")
-    if tag_confidence_str is not None:
-        try:
-            tag_confidence = float(tag_confidence_str)
-        except ValueError:
-            return jsonify({"error": "tag_confidence must be a float between 0 and 1"}), 400
-        if not 0.0 <= tag_confidence <= 1.0:
-            return jsonify({"error": "tag_confidence must be between 0 and 1"}), 400
-        siglip_threshold = tag_confidence
-        ram_threshold    = tag_confidence
-    else:
-        siglip_threshold = SIGLIP_TAG_THRESHOLD
-        ram_threshold    = RAM_TAG_THRESHOLD
+    siglip_threshold = SIGLIP_TAG_THRESHOLD
+    ram_threshold    = RAM_TAG_THRESHOLD
 
     # ── Decode image ──────────────────────────────────────────────────────────
     if request.files and "image" in request.files:
