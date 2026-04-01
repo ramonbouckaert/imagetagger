@@ -403,17 +403,30 @@ def load_keyphrase_model() -> None:
     logger.info("Keyphrase extraction model loaded.")
 
 
-def get_keyphrases(text: str) -> list[str]:
-    """Extract keyphrases present in text using token classification."""
+def get_keyphrases(inputs: list[str]) -> list[str]:
+    """Extract keyphrases from a list of texts using token classification."""
     logger.debug("Keyphrase extraction started")
-    if _keyphrase_pipeline is None or not text.strip():
+    if _keyphrase_pipeline is None:
         return []
     try:
-        words = text.split()
-        if len(words) > 400:
-            text = " ".join(words[:400])
-        results = _keyphrase_pipeline(text)
-        tags = [r["word"].strip() for r in results if r.get("entity_group") == "KEY" and r.get("word", "").strip()]
+        tok = _keyphrase_pipeline.tokenizer
+        truncated = [
+            tok.decode(
+                tok(t, truncation=True, max_length=512)["input_ids"],
+                skip_special_tokens=True,
+            )
+            for t in inputs if t.strip()
+        ]
+        if not truncated:
+            return []
+        tags: list[str] = []
+        seen: set[str] = set()
+        for per_text in _keyphrase_pipeline(truncated):
+            for r in per_text:
+                word = r.get("word", "").strip()
+                if r.get("entity_group") == "KEY" and word and word not in seen:
+                    tags.append(word)
+                    seen.add(word)
         logger.debug("Keyphrase extraction complete: %s", tags)
         return tags
     except Exception:
@@ -448,13 +461,13 @@ def correct_ocr_text(text: str) -> str:
         return text
     try:
         result = _ocr_correction_pipeline(
-            text,
+            [text],
             max_new_tokens=int(len(text.split()) * 1.5),
             truncation=True,
             no_repeat_ngram_size=5,
             repetition_penalty=2.5,
         )
-        corrected = result[0]["generated_text"].strip()
+        corrected = result[0][0]["generated_text"].strip()
         logger.debug("OCR correction complete")
         return corrected
     except Exception:
@@ -595,12 +608,9 @@ def analyse():
         # Uses corrected OCR text so keyphrases benefit from the correction.
         # Submitted to the pool to keep inference off the Flask thread.
         if ENABLE_KEYPHRASE and _keyphrase_pipeline is not None:
-            text_input = " ".join(filter(None, [
-                florence_results.get("cap", ""),
-                ocr_text,
-            ])).strip()
-            if text_input:
-                for tag in _inference_pool.submit(get_keyphrases, text_input).result():
+            kp_inputs = [t for t in [florence_results.get("cap", ""), ocr_text] if t.strip()]
+            if kp_inputs:
+                for tag in _inference_pool.submit(get_keyphrases, kp_inputs).result():
                     _add_tag(tag)
 
         return jsonify({
