@@ -18,13 +18,15 @@ my $DEBOUNCE_SECS = 5;
 sub new {
     my ($class, %args) = @_;
 
-    my $max_inflight = $args{workers} // 32;
-    my $timeout      = $args{timeout} // 5;
+    my $max_inflight       = $args{workers} // 8;
+    my $connect_timeout    = $args{connect_timeout}    // 5;
+    my $inactivity_timeout = $args{inactivity_timeout} // 300;
+    my $request_timeout    = $args{request_timeout}    // 0;
 
     my $ua = Mojo::UserAgent->new;
-    $ua->connect_timeout($timeout);
-    $ua->request_timeout($timeout);
-    $ua->inactivity_timeout($timeout);
+    $ua->connect_timeout($connect_timeout);
+    $ua->inactivity_timeout($inactivity_timeout);
+    $ua->request_timeout($request_timeout);
     $ua->max_connections($max_inflight);
 
     my $self = bless {
@@ -222,6 +224,11 @@ sub _process_file_p {
 
             if ($self->{cancel_requested}{$path} || $self->{cancel}) {
                 print "[cancel] request cancelled for $path\n";
+                return;
+            }
+
+            if (defined $err && $err =~ /Request timeout/) {
+                warn "[timeout] upload timed out for $path: $err\n";
                 return;
             }
 
