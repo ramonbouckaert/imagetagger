@@ -7,11 +7,12 @@ import io
 import re
 import logging
 import traceback
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait, FIRST_EXCEPTION
+from threading import Event
 
 from PIL import Image
 
-from config import MAX_IMAGE_EDGE, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
+from config import MAX_IMAGE_EDGE, REQUEST_TIMEOUT, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
 from models import Florence2Model, SigLIPModel, RAMModel, OCRCorrectionModel, SpacyModel
 
 logger = logging.getLogger(__name__)
@@ -136,31 +137,50 @@ class AnalysisController:
             logger.debug("Downscaled image to %s", img.size)
         return img
 
-    def analyse(self, image: Image.Image) -> dict:
+    def analyse(self, image: Image.Image, timeout: int = REQUEST_TIMEOUT) -> dict:
         """
         Run all models and return the merged result dict.
-        Caller must hold the concurrency slot (call try_acquire() first).
+        Raises TimeoutError if the total wall time exceeds timeout seconds.
+        The cancel event is set on timeout so retry loops in models stop promptly.
         """
+        cancel = Event()
+
+        def _wait(futures, remaining):
+            done, not_done = futures_wait(futures, timeout=remaining)
+            if not_done:
+                cancel.set()
+                raise TimeoutError(f"Analysis timed out after {timeout}s")
+
+        import time as _time
+        deadline = _time.monotonic() + timeout
+
+        def _remaining():
+            left = deadline - _time.monotonic()
+            if left <= 0:
+                cancel.set()
+                raise TimeoutError(f"Analysis timed out after {timeout}s")
+            return left
+
         # ── Phase 1: Florence + SigLIP + RAM in parallel ──────────────────────
-        florence_future = self._florence.analyse(image)
+        florence_future = self._florence.analyse(image, cancel)
         siglip_future = (
-            self._pool.submit(self._siglip.classify, image, SIGLIP_TAG_THRESHOLD)
+            self._pool.submit(self._siglip.classify, image, SIGLIP_TAG_THRESHOLD, cancel)
             if self._siglip.is_ready() else None
         )
         ram_future = (
-            self._pool.submit(self._ram.classify, image, RAM_TAG_THRESHOLD)
+            self._pool.submit(self._ram.classify, image, RAM_TAG_THRESHOLD, cancel)
             if self._ram.is_ready() else None
         )
 
         phase1 = [f for f in (florence_future, siglip_future, ram_future) if f is not None]
-        futures_wait(phase1)
+        _wait(phase1, _remaining())
 
         florence_result = florence_future.result()
         cap = florence_result.description
         cap_quotes = " ".join(re.findall(r'"([^"]+)"', cap))
 
         # ── Phase 2: OCR correction + caption spaCy (overlapping) ─────────────
-        ocr_future = self._ocr_correction.correct(florence_result.ocr_raw)
+        ocr_future = self._ocr_correction.correct(florence_result.ocr_raw, cancel)
 
         cap_chunks_future = (
             self._pool.submit(self._spacy.noun_chunk_tags, cap)
@@ -175,6 +195,7 @@ class AnalysisController:
             if cap_quotes and self._spacy.is_ready() else None
         )
 
+        _wait([ocr_future], _remaining())
         ocr_text = ocr_future.result()
 
         # ── Phase 3: spaCy on corrected OCR text ──────────────────────────────
@@ -188,7 +209,7 @@ class AnalysisController:
             if f is not None
         ]
         if spacy_futures:
-            futures_wait(spacy_futures)
+            _wait(spacy_futures, _remaining())
 
         # ── Merge ──────────────────────────────────────────────────────────────
         tags: list[str] = []

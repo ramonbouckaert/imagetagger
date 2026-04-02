@@ -91,7 +91,10 @@ def analyse():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    return jsonify(controller.analyse(image))
+    try:
+        return jsonify(controller.analyse(image))
+    except TimeoutError as e:
+        return jsonify({"error": str(e)}), 504
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

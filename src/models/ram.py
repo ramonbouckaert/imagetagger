@@ -1,5 +1,7 @@
 import logging
+import time
 import traceback
+from threading import Event
 
 import torch
 from PIL import Image
@@ -49,23 +51,26 @@ class RAMModel:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def classify(self, image: Image.Image, threshold: float) -> list[str]:
+    def classify(self, image: Image.Image, threshold: float, cancel: Event | None = None) -> list[str]:
         """Synchronous. Thread-safe — caller may submit to a pool for concurrency."""
         logger.debug("RAM++ classify started")
         if not self.is_ready():
             return []
-        try:
-            from ram import inference_ram
-            model_dtype = next(self._model.parameters()).dtype
-            image_tensor = self._transform(image).unsqueeze(0).to(DEVICE, dtype=model_dtype)
-            tags_str, _ = inference_ram(image_tensor, self._model)
-            logger.debug("RAM++ classify complete")
-            return [t.strip() for t in tags_str.split("|") if t.strip()]
-        except Exception:
-            logger.error("RAM++ inference failed:\n%s", traceback.format_exc())
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-            return []
+        from ram import inference_ram
+        while True:
+            try:
+                model_dtype = next(self._model.parameters()).dtype
+                image_tensor = self._transform(image).unsqueeze(0).to(DEVICE, dtype=model_dtype)
+                tags_str, _ = inference_ram(image_tensor, self._model)
+                logger.debug("RAM++ classify complete")
+                return [t.strip() for t in tags_str.split("|") if t.strip()]
+            except Exception:
+                if cancel and cancel.is_set():
+                    raise
+                logger.error("RAM++ inference failed, retrying:\n%s", traceback.format_exc())
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+                time.sleep(1)
 
     def device_str(self) -> str:
         if not self._enabled:

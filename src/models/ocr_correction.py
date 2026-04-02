@@ -1,6 +1,8 @@
 import logging
+import time
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
 
 import torch
 
@@ -42,7 +44,7 @@ class OCRCorrectionModel:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def correct(self, text: str) -> "Future[str]":
+    def correct(self, text: str, cancel: Event | None = None) -> "Future[str]":
         """
         Submit OCR correction to the private serialising executor.
         Returns a Future so the controller can overlap it with spaCy work.
@@ -52,26 +54,31 @@ class OCRCorrectionModel:
             f: Future[str] = Future()
             f.set_result(text)
             return f
-        return self._executor.submit(self._correct_sync, text)
+        return self._executor.submit(self._correct_sync, text, cancel)
 
-    def _correct_sync(self, text: str) -> str:
+    def _correct_sync(self, text: str, cancel: Event | None) -> str:
         logger.debug("OCR correction started")
-        try:
-            tok = self._tokenizer
-            inputs = tok(text, return_tensors="pt", truncation=True).to(DEVICE)
-            token_count = inputs["input_ids"].shape[1]
-            with torch.no_grad():
-                output_ids = self._model.generate(
-                    **inputs,
-                    max_new_tokens=int(token_count * 1.1),
-                    max_length=None,
-                )
-            corrected = tok.decode(output_ids[0], skip_special_tokens=True).strip()
-            logger.debug("OCR correction complete")
-            return corrected
-        except Exception:
-            logger.error("OCR correction failed:\n%s", traceback.format_exc())
-            return text
+        tok = self._tokenizer
+        while True:
+            try:
+                inputs = tok(text, return_tensors="pt", truncation=True).to(DEVICE)
+                token_count = inputs["input_ids"].shape[1]
+                with torch.no_grad():
+                    output_ids = self._model.generate(
+                        **inputs,
+                        max_new_tokens=int(token_count * 1.1),
+                        max_length=None,
+                    )
+                corrected = tok.decode(output_ids[0], skip_special_tokens=True).strip()
+                logger.debug("OCR correction complete")
+                return corrected
+            except Exception:
+                if cancel and cancel.is_set():
+                    raise
+                logger.error("OCR correction failed, retrying:\n%s", traceback.format_exc())
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+                time.sleep(1)
 
     def device_str(self) -> str:
         if not self._enabled:

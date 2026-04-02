@@ -1,5 +1,7 @@
 import logging
+import time
 import traceback
+from threading import Event
 
 import torch
 from PIL import Image
@@ -52,31 +54,34 @@ class SigLIPModel:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def classify(self, image: Image.Image, threshold: float) -> list[str]:
+    def classify(self, image: Image.Image, threshold: float, cancel: Event | None = None) -> list[str]:
         """Synchronous. Thread-safe — caller may submit to a pool for concurrency."""
         logger.debug("SigLIP classify started")
         if not self.is_ready():
             return []
-        try:
-            img_inputs = self._processor(images=image, return_tensors="pt")
-            model_dtype = next(self._model.parameters()).dtype
-            img_inputs = {
-                k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
-                for k, v in img_inputs.items()
-            }
-            with torch.no_grad():
-                outputs = self._model(
-                    pixel_values=img_inputs["pixel_values"],
-                    **self._text_inputs,
-                )
-                probs = torch.sigmoid(outputs.logits_per_image).squeeze(0).cpu().numpy()
-            logger.debug("SigLIP classify complete")
-            return [tag for tag, p in zip(SIGLIP_CANDIDATE_TAGS, probs) if p >= threshold]
-        except Exception:
-            logger.error("SigLIP inference failed:\n%s", traceback.format_exc())
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-            return []
+        while True:
+            try:
+                img_inputs = self._processor(images=image, return_tensors="pt")
+                model_dtype = next(self._model.parameters()).dtype
+                img_inputs = {
+                    k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
+                    for k, v in img_inputs.items()
+                }
+                with torch.no_grad():
+                    outputs = self._model(
+                        pixel_values=img_inputs["pixel_values"],
+                        **self._text_inputs,
+                    )
+                    probs = torch.sigmoid(outputs.logits_per_image).squeeze(0).cpu().numpy()
+                logger.debug("SigLIP classify complete")
+                return [tag for tag, p in zip(SIGLIP_CANDIDATE_TAGS, probs) if p >= threshold]
+            except Exception:
+                if cancel and cancel.is_set():
+                    raise
+                logger.error("SigLIP inference failed, retrying:\n%s", traceback.format_exc())
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+                time.sleep(1)
 
     def device_str(self) -> str:
         if not self._enabled:

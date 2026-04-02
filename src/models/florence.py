@@ -1,9 +1,11 @@
 import logging
 import re
+import time
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from queue import Queue
+from threading import Event
 
 import torch
 from PIL import Image
@@ -64,26 +66,35 @@ class Florence2Model:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def analyse(self, image: Image.Image) -> "Future[FlorenceResult]":
+    def analyse(self, image: Image.Image, cancel: Event | None = None) -> "Future[FlorenceResult]":
         """
         Submit OD + caption + OCR to the executor. The job will block until a
         model instance is free, then run all three tasks on that instance.
-        Returns a Future immediately.
+        Returns a Future immediately. Set cancel to abort retrying on failure.
         """
         if not self.is_ready():
             f: Future[FlorenceResult] = Future()
             f.set_result(FlorenceResult())
             return f
-        return self._executor.submit(self._run_all, image)
+        return self._executor.submit(self._run_all, image, cancel)
 
-    def _run_all(self, image: Image.Image) -> FlorenceResult:
+    def _run_all(self, image: Image.Image, cancel: Event | None) -> FlorenceResult:
         model, processor = self._pool.get()
         try:
-            return FlorenceResult(
-                od_tags=self._od(model, processor, image),
-                description=self._caption(model, processor, image),
-                ocr_raw=self._ocr(model, processor, image),
-            )
+            while True:
+                try:
+                    return FlorenceResult(
+                        od_tags=self._od(model, processor, image),
+                        description=self._caption(model, processor, image),
+                        ocr_raw=self._ocr(model, processor, image),
+                    )
+                except Exception:
+                    if cancel and cancel.is_set():
+                        raise
+                    logger.error("Florence-2 inference failed, retrying:\n%s", traceback.format_exc())
+                    if DEVICE == "cuda":
+                        torch.cuda.empty_cache()
+                    time.sleep(1)
         finally:
             self._pool.put((model, processor))
 
@@ -122,68 +133,50 @@ class Florence2Model:
 
     def _od(self, model, processor, image: Image.Image) -> list[str]:
         logger.debug("Florence OD started")
-        try:
-            inputs = processor(text="<OD>", images=image, return_tensors="pt")
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
-                for k, v in inputs.items()
-            }
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    max_new_tokens=1024,
-                    num_beams=3,
-                    do_sample=False,
-                )
-            generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-            parsed = processor.post_process_generation(
-                generated_text, task="<OD>", image_size=(image.width, image.height),
+        inputs = processor(text="<OD>", images=image, return_tensors="pt")
+        model_dtype = next(model.parameters()).dtype
+        inputs = {
+            k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
+            for k, v in inputs.items()
+        }
+        with torch.no_grad():
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                do_sample=False,
             )
-            labels = parsed.get("<OD>", {}).get("labels", [])
-            seen: set[str] = set()
-            tags: list[str] = []
-            for label in labels:
-                if label.lower() not in seen:
-                    seen.add(label.lower())
-                    tags.append(label)
-            logger.debug("Florence OD complete")
-            return tags
-        except Exception:
-            logger.error("Florence-2 <OD> failed:\n%s", traceback.format_exc())
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-            return []
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        parsed = processor.post_process_generation(
+            generated_text, task="<OD>", image_size=(image.width, image.height),
+        )
+        labels = parsed.get("<OD>", {}).get("labels", [])
+        seen: set[str] = set()
+        tags: list[str] = []
+        for label in labels:
+            if label.lower() not in seen:
+                seen.add(label.lower())
+                tags.append(label)
+        logger.debug("Florence OD complete")
+        return tags
 
     def _caption(self, model, processor, image: Image.Image) -> str:
         logger.debug("Florence CAP started")
-        try:
-            raw = re.sub(r"\s+", " ", self._generate(model, processor, "<MORE_DETAILED_CAPTION>", image)).strip()
-            logger.debug("Florence CAP complete")
-            return re.sub(
-                r"^The image \w+\s+(.)",
-                lambda m: m.group(1).upper(),
-                raw,
-            )
-        except Exception:
-            logger.error("Florence-2 <MORE_DETAILED_CAPTION> failed:\n%s", traceback.format_exc())
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-            return ""
+        raw = re.sub(r"\s+", " ", self._generate(model, processor, "<MORE_DETAILED_CAPTION>", image)).strip()
+        logger.debug("Florence CAP complete")
+        return re.sub(
+            r"^The image \w+\s+(.)",
+            lambda m: m.group(1).upper(),
+            raw,
+        )
 
     def _ocr(self, model, processor, image: Image.Image) -> str:
         logger.debug("Florence OCR started")
-        try:
-            raw = self._generate(model, processor, "<OCR>", image, max_new_tokens=256, num_beams=3)
-            logger.debug("Florence OCR complete")
-            text = re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
-            return text if re.search(r"[a-zA-Z0-9]{2}", text) else ""
-        except Exception:
-            logger.error("Florence-2 <OCR> failed:\n%s", traceback.format_exc())
-            if DEVICE == "cuda":
-                torch.cuda.empty_cache()
-            return ""
+        raw = self._generate(model, processor, "<OCR>", image, max_new_tokens=256, num_beams=3)
+        logger.debug("Florence OCR complete")
+        text = re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
+        return text if re.search(r"[a-zA-Z0-9]{2}", text) else ""
 
     def device_str(self) -> str:
         if not self._enabled:
