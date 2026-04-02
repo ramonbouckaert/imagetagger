@@ -160,7 +160,7 @@ def _compile(model):
 FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "florence-community/Florence-2-large")
 SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip2-so400m-patch14-384")
 RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
-SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_trf")
+SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
 MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
 MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
@@ -492,7 +492,6 @@ def load_spacy_model() -> None:
     if not _SPACY_AVAILABLE or not ENABLE_SPACY:
         return
     logger.info("Loading spaCy model (%s) ...", SPACY_MODEL)
-    _spacy.prefer_gpu()
     spacy_nlp = _spacy.load(SPACY_MODEL)
     logger.info("spaCy model loaded.")
 
@@ -721,13 +720,7 @@ def _report_devices() -> None:
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
     logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline))
-    if spacy_nlp is not None:
-        _spacy_device = "cuda:0" if _spacy.prefer_gpu() else "cpu"
-    elif not ENABLE_SPACY:
-        _spacy_device = "disabled"
-    else:
-        _spacy_device = "not loaded"
-    logger.info("  spaCy      : %s", _spacy_device)
+    logger.info("  spaCy      : %s", "cpu" if spacy_nlp is not None else ("disabled" if not ENABLE_SPACY else "not loaded"))
     logger.info("=" * 56)
 
 
