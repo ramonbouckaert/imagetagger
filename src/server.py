@@ -224,7 +224,7 @@ def load_florence_model() -> None:
     florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL)
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     florence_model = Florence2ForConditionalGeneration.from_pretrained(
-                         FLORENCE_MODEL, torch_dtype=dtype,
+                         FLORENCE_MODEL, dtype=dtype,
                      ).to(DEVICE)
     florence_model.eval()
     logger.info("Florence-2 model loaded.")
@@ -361,7 +361,7 @@ def load_siglip_model() -> None:
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     logger.info("Loading SigLIP model (%s) on %s ...", SIGLIP_MODEL_ID, DEVICE)
     siglip_processor = AutoProcessor.from_pretrained(SIGLIP_MODEL_ID)
-    siglip_model     = AutoModel.from_pretrained(SIGLIP_MODEL_ID, torch_dtype=dtype).to(DEVICE)
+    siglip_model     = AutoModel.from_pretrained(SIGLIP_MODEL_ID, dtype=dtype).to(DEVICE)
     siglip_model.eval()
     with torch.no_grad():
         text_inputs = siglip_processor(
@@ -455,7 +455,7 @@ def load_ocr_correction_model() -> None:
     _ocr_correction_tokenizer = AutoTokenizer.from_pretrained(OCR_CORRECTION_MODEL_ID)
     _ocr_correction_pipeline = AutoModelForSeq2SeqLM.from_pretrained(
         OCR_CORRECTION_MODEL_ID,
-        torch_dtype=dtype,
+        dtype=dtype,
     ).to(DEVICE)
     _ocr_correction_pipeline.eval()
     logger.info("OCR correction model loaded.")
