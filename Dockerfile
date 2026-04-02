@@ -98,7 +98,7 @@ COPY patches/ram_bert.py /app/venv/lib/python3.10/site-packages/ram/models/bert.
 COPY patches/ram_utils.py /app/venv/lib/python3.10/site-packages/ram/models/utils.py
 
 # ── Application ────────────────────────────────────────────────────────────────
-COPY src/server.py .
+COPY src/config.py src/models.py src/controller.py src/server.py .
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
