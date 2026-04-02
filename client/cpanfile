@@ -1,0 +1,8 @@
+requires 'Linux::Inotify2';
+requires 'Thread::Queue';
+requires 'threads';
+requires 'threads::shared';
+requires 'LWP::UserAgent';
+requires 'HTTP::Request::Common';
+requires 'JSON';
+requires 'Image::ExifTool';
