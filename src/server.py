@@ -24,6 +24,11 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", category=FutureWarning, module="fairscale")
 warnings.filterwarnings("ignore", message="Asking to truncate to max_length but no maximum length is provided")
 
+# Models are downloaded by the entrypoint before the server starts.
+# Default to offline mode so every startup doesn't hit HuggingFace to
+# validate cached files. Override with HF_HUB_OFFLINE=0 to allow downloads.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 # ── Core imports ───────────────────────────────────────────────────────────────
 _import_errors: list[str] = []
 
@@ -235,6 +240,7 @@ def _florence_generate(task: str, pil_image: Image.Image, *, max_new_tokens: int
             input_ids=inputs["input_ids"],
             pixel_values=inputs["pixel_values"],
             max_new_tokens=max_new_tokens,
+            max_length=None,
             num_beams=num_beams,
             do_sample=False,
         )
@@ -467,6 +473,7 @@ def correct_ocr_text(text: str) -> str:
             output_ids = _ocr_correction_pipeline.generate(
                 **inputs,
                 max_new_tokens=int(token_count * 1.1),
+                max_length=None,
             )
         corrected = tok.decode(output_ids[0], skip_special_tokens=True).strip()
         logger.debug("OCR correction complete")
