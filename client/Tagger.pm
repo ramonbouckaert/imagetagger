@@ -28,16 +28,19 @@ sub new {
     $ua->max_connections($max_inflight);
 
     my $self = bless {
-        endpoint      => $args{endpoint} // 'http://localhost:9100/analyse',
-        max_inflight  => $max_inflight,
-        ua            => $ua,
-        pending       => [],
-        active        => 0,
-        cancel        => 0,
-        draining      => 0,
-        drain_promise => undef,
-        inflight      => {},
-        last_written  => {},
+        endpoint          => $args{endpoint} // 'http://localhost:9100/analyse',
+        max_inflight      => $max_inflight,
+        ua                => $ua,
+        pending           => [],
+        active            => 0,
+        cancel            => 0,
+        draining          => 0,
+        drain_promise     => undef,
+        inflight          => {},
+        last_written      => {},
+        tx_by_path        => {},
+        conn_id_by_path   => {},
+        cancel_requested  => {},
     }, $class;
 
     return $self;
@@ -86,10 +89,20 @@ sub cancel {
     $self->{cancel} = 1;
 
     my @dropped = @{ delete $self->{pending} || [] };
-    delete $self->{inflight}{$_}     for @dropped;
-    delete $self->{last_written}{$_} for @dropped;
+    delete $self->{inflight}{$_}         for @dropped;
+    delete $self->{last_written}{$_}     for @dropped;
+    delete $self->{cancel_requested}{$_} for @dropped;
 
-    printf "[cancel] dropped %d queued job(s)\n", scalar(@dropped);
+    my @active_http = keys %{ $self->{tx_by_path} };
+    for my $path (@active_http) {
+        $self->{cancel_requested}{$path} = 1;
+
+        my $id = delete $self->{conn_id_by_path}{$path};
+        Mojo::IOLoop->remove($id) if defined $id;
+    }
+
+    printf "[cancel] dropped %d queued job(s), aborting %d active HTTP request(s)\n",
+        scalar(@dropped), scalar(@active_http);
 
     if (!$self->{active}) {
         $self->_resolve_drain;
@@ -134,53 +147,91 @@ sub _process_file_p {
 
     print "[upload] $path\n";
 
-    return $self->{ua}->post_p(
-        $self->{endpoint} => form => {
+    my $tx = $self->{ua}->build_tx(
+        POST => $self->{endpoint} => form => {
             image => {
                 file           => $path,
                 filename       => basename($path),
                 'Content-Type' => 'image/avif',
             },
         }
-    )->then(sub {
-        my ($tx) = @_;
+    );
 
-        if ($self->{cancel}) {
-            print "[cancel] abandoning $path after request\n";
-            return;
+    $self->{tx_by_path}{$path} = $tx;
+
+    $tx->on(connection => sub {
+        my ($tx, $id) = @_;
+        $self->{conn_id_by_path}{$path} = $id;
+
+        if ($self->{cancel_requested}{$path}) {
+            delete $self->{conn_id_by_path}{$path};
+            Mojo::IOLoop->remove($id);
         }
-
-        my $res = $tx->result;
-
-        unless ($res->is_success) {
-            my $status = defined $res->code ? $res->code : '(no status)';
-            my $msg    = $res->message // '';
-            warn "[error] Upload failed for $path: $status $msg\n";
-
-            my $body = $res->body;
-            warn "        $body\n" if defined $body && length $body;
-            return;
-        }
-
-        my $data = eval { decode_json($res->body) };
-        if ($@) {
-            warn "[error] Could not parse JSON response for $path: $@\n";
-            return;
-        }
-
-        my $description = $data->{description} // '';
-        my @tags        = @{ $data->{tags} // [] };
-
-        printf "[result] description: %s\n", $description || '(none)';
-        printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
-
-        if ($self->{cancel}) {
-            print "[cancel] skipping metadata write for $path\n";
-            return;
-        }
-
-        return $self->_write_metadata_p($path, $description, \@tags);
     });
+
+    return $self->{ua}->start_p($tx)
+        ->then(sub {
+            my ($tx) = @_;
+
+            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                print "[cancel] abandoning $path after request\n";
+                return;
+            }
+
+            my $res = eval { $tx->result };
+            if (!$res) {
+                my $err = $@ || 'unknown transport error';
+                if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                    print "[cancel] request cancelled for $path\n";
+                    return;
+                }
+                die $err;
+            }
+
+            unless ($res->is_success) {
+                my $status = defined $res->code ? $res->code : '(no status)';
+                my $msg    = $res->message // '';
+                warn "[error] Upload failed for $path: $status $msg\n";
+
+                my $body = $res->body;
+                warn "        $body\n" if defined $body && length $body;
+                return;
+            }
+
+            my $data = eval { decode_json($res->body) };
+            if ($@) {
+                warn "[error] Could not parse JSON response for $path: $@\n";
+                return;
+            }
+
+            my $description = $data->{description} // '';
+            my @tags        = @{ $data->{tags} // [] };
+
+            printf "[result] description: %s\n", $description || '(none)';
+            printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
+
+            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                print "[cancel] skipping metadata write for $path\n";
+                return;
+            }
+
+            return $self->_write_metadata_p($path, $description, \@tags);
+        })
+        ->catch(sub {
+            my ($err) = @_;
+
+            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                print "[cancel] request cancelled for $path\n";
+                return;
+            }
+
+            die $err;
+        })
+        ->finally(sub {
+            delete $self->{tx_by_path}{$path};
+            delete $self->{conn_id_by_path}{$path};
+            delete $self->{cancel_requested}{$path};
+        });
 }
 
 sub _write_metadata_p {
