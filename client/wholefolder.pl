@@ -46,9 +46,28 @@ END
 
 my $tagger = Tagger->new(endpoint => $endpoint, workers => $workers);
 
+my $shutting_down = 0;
+
+$SIG{INT} = $SIG{TERM} = sub {
+    if ($shutting_down) {
+        warn "\nSecond interrupt, forcing exit.\n";
+        exit 1;
+    }
+
+    $shutting_down = 1;
+    print "\nInterrupt received, cancelling queued and in-flight jobs...\n";
+
+    eval { $tagger->cancel(); 1 }
+        or warn "[error] cancel failed: $@\n";
+
+    exit 0;
+};
+
 sub enqueue_dir {
     my ($d) = @_;
+    return if $shutting_down;
     for my $file (glob("$d/*.avif"), glob("$d/*.AVIF")) {
+        last if $shutting_down;
         $tagger->enqueue($file);
     }
 }
@@ -57,12 +76,15 @@ enqueue_dir($dir);
 
 opendir(my $dh, $dir) or die "Cannot open '$dir': $!\n";
 while (my $entry = readdir($dh)) {
+    last if $shutting_down;
     next if $entry =~ /^\./;
     my $subdir = "$dir/$entry";
     enqueue_dir($subdir) if -d $subdir;
 }
 closedir($dh);
 
-printf "Queued files — waiting for %d workers to finish...\n", $workers;
-$tagger->drain();
-print "Done.\n";
+if (!$shutting_down) {
+    printf "Queued files, waiting for %d workers to finish...\n", $workers;
+    $tagger->drain();
+    print "Done.\n";
+}

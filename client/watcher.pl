@@ -50,9 +50,17 @@ END
 
 my $tagger = Tagger->new(endpoint => $endpoint, workers => $workers);
 
+my $shutting_down = 0;
+
 $SIG{INT} = $SIG{TERM} = sub {
-    print "\nShutting down (draining queue)...\n";
-    $tagger->drain();
+    if ($shutting_down) {
+        warn "\nSecond interrupt, forcing exit.\n";
+        exit 1;
+    }
+    $shutting_down = 1;
+    print "\nInterrupt received, cancelling queued and in-flight jobs...\n";
+    eval { $tagger->cancel(); 1 }
+        or warn "[error] cancel failed: $@\n";
     exit 0;
 };
 
@@ -67,6 +75,7 @@ sub watch_dir {
         $dir,
         IN_CLOSE_WRITE | IN_MOVED_TO,
         sub {
+            return if $shutting_down;
             my ($event) = @_;
             $tagger->enqueue($event->fullname) unless $event->IN_ISDIR;
         },
@@ -78,6 +87,7 @@ $inotify->watch(
     $watch_dir,
     IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE,
     sub {
+        return if $shutting_down;
         my ($event) = @_;
         if ($event->IN_ISDIR) {
             watch_dir($event->fullname);
@@ -98,4 +108,4 @@ closedir($dh);
 printf "Started %d workers\n", $workers;
 print  "Endpoint: $endpoint\n";
 
-1 while $inotify->read;
+1 while !$shutting_down && $inotify->read;
