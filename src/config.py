@@ -65,8 +65,7 @@ SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
 
 # ── Runtime tuning ─────────────────────────────────────────────────────────────
-MAX_CONCURRENCY      = int(os.environ.get("MAX_CONCURRENCY", "2"))
-MAX_IMAGE_EDGE       = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
+MAX_IMAGE_EDGE = int(os.environ.get("MAX_IMAGE_EDGE", "1600"))
 SIGLIP_TAG_THRESHOLD = 0.05
 RAM_TAG_THRESHOLD    = 0.68
 

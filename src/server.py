@@ -12,7 +12,7 @@ import logging
 from flask import Flask, request, jsonify
 
 from config import (
-    DEVICE, MAX_CONCURRENCY,
+    DEVICE,
     FLORENCE_MODEL, SIGLIP_MODEL_ID, RAM_CHECKPOINT, SPACY_MODEL, OCR_CORRECTION_MODEL_ID,
     ENABLE_FLORENCE, ENABLE_SIGLIP, ENABLE_RAM, ENABLE_OCR_CORRECTION, ENABLE_SPACY,
 )
@@ -62,8 +62,7 @@ def health():
             "ocr_correction": _status(_ocr_correction),
             "spacy":          _status(_spacy),
         },
-        "device":          DEVICE,
-        "max_concurrency": MAX_CONCURRENCY,
+        "device": DEVICE,
     })
 
 
@@ -71,9 +70,7 @@ def health():
 def analyse():
     """
     Accepts an image via multipart/form-data (field: "image") or raw binary body.
-
     Returns 503 if any model has not finished loading.
-    Returns 429 if MAX_CONCURRENCY active requests are already running.
     """
     not_loaded = controller.not_ready()
     if not_loaded:
@@ -94,16 +91,7 @@ def analyse():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    if not controller.try_acquire():
-        return jsonify({
-            "error":           "Server is busy — try again shortly.",
-            "max_concurrency": MAX_CONCURRENCY,
-        }), 429
-
-    try:
-        return jsonify(controller.analyse(image))
-    finally:
-        controller.release()
+    return jsonify(controller.analyse(image))
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

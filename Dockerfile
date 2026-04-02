@@ -112,4 +112,6 @@ EXPOSE 9100
 
 ENTRYPOINT ["/entrypoint.sh"]
 # Single worker to avoid duplicating the large model in memory.
-CMD ["sh", "-c", "exec gunicorn -w 1 -b 0.0.0.0:${PORT} --timeout 300 server:app"]
+# gthread worker lets multiple requests queue concurrently within the one process;
+# inference serialisation is handled by each model's own executor.
+CMD ["sh", "-c", "exec gunicorn -w 1 --worker-class gthread --threads 16 -b 0.0.0.0:${PORT} --timeout 300 server:app"]

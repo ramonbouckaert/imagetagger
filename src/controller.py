@@ -6,13 +6,12 @@ Knows nothing about Flask; accepts bytes, returns a plain dict.
 import io
 import re
 import logging
-import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
 from PIL import Image
 
-from config import MAX_CONCURRENCY, MAX_IMAGE_EDGE, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
+from config import MAX_IMAGE_EDGE, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
 from models import Florence2Model, SigLIPModel, RAMModel, OCRCorrectionModel, SpacyModel
 
 logger = logging.getLogger(__name__)
@@ -88,17 +87,19 @@ class AnalysisController:
       Phase 2: OCR correction starts immediately after phase 1;
                caption spaCy tasks also start immediately (overlap with OCR correction)
       Phase 3: spaCy on corrected OCR text (after OCR correction resolves)
+
+    Requests queue naturally at each model's own executor; there is no
+    request-level concurrency cap — callers are never turned away with 429.
     """
 
     def __init__(
         self,
-        florence:        Florence2Model,
-        siglip:          SigLIPModel,
-        ram:             RAMModel,
-        ocr_correction:  OCRCorrectionModel,
-        spacy:           SpacyModel,
-        max_concurrency: int = MAX_CONCURRENCY,
-        max_image_edge:  int = MAX_IMAGE_EDGE,
+        florence:       Florence2Model,
+        siglip:         SigLIPModel,
+        ram:            RAMModel,
+        ocr_correction: OCRCorrectionModel,
+        spacy:          SpacyModel,
+        max_image_edge: int = MAX_IMAGE_EDGE,
     ) -> None:
         self._florence       = florence
         self._siglip         = siglip
@@ -106,11 +107,9 @@ class AnalysisController:
         self._ocr_correction = ocr_correction
         self._spacy          = spacy
         self._max_edge       = max_image_edge
-        self._sem            = threading.Semaphore(max_concurrency)
-        self._pool           = ThreadPoolExecutor(
-            max_workers=max_concurrency * 4,
-            thread_name_prefix="inference",
-        )
+        # Shared pool for thread-safe models (SigLIP, RAM, spaCy).
+        # Non-thread-safe models own their own single-thread executors.
+        self._pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix="inference")
 
     def not_ready(self) -> list[str]:
         """Return names of models that are enabled but not yet loaded."""
@@ -124,13 +123,6 @@ class AnalysisController:
             ]
             if model.is_enabled() and not model.is_ready()
         ]
-
-    def try_acquire(self) -> bool:
-        """Non-blocking concurrency slot acquisition. Returns False if at capacity."""
-        return self._sem.acquire(blocking=False)
-
-    def release(self) -> None:
-        self._sem.release()
 
     def decode_image(self, data: bytes) -> Image.Image:
         """
