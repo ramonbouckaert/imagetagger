@@ -149,9 +149,20 @@ sub worker {
     }
 }
 
+sub cleaner {
+    while (1) {
+        sleep($DEBOUNCE_SECS * 2);
+        lock(%last_written);
+        my $cutoff = time() - $DEBOUNCE_SECS;
+        delete $last_written{$_}
+            for grep { $last_written{$_} < $cutoff } keys %last_written;
+    }
+}
+
 # ── Thread pool ────────────────────────────────────────────────────────────────
 
 my @pool = map { threads->create(\&worker) } 1..$workers;
+threads->create(\&cleaner)->detach();
 
 $SIG{INT} = $SIG{TERM} = sub {
     print "\nShutting down (draining queue)...\n";
