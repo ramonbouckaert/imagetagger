@@ -10,7 +10,7 @@ from threading import Event
 import torch
 from PIL import Image
 
-from config import DEVICE, MODELS_AVAILABLE
+from config import DEVICE, MODELS_AVAILABLE, RETRY_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ class Florence2Model:
     def _run_all(self, image: Image.Image, cancel: Event | None) -> FlorenceResult:
         model, processor = self._pool.get()
         try:
+            retry_since = None
             while True:
                 try:
                     return FlorenceResult(
@@ -90,6 +91,12 @@ class Florence2Model:
                     )
                 except Exception:
                     if cancel and cancel.is_set():
+                        raise
+                    now = time.monotonic()
+                    if retry_since is None:
+                        retry_since = now
+                    elif now - retry_since >= RETRY_TIMEOUT:
+                        logger.error("Florence-2 giving up after retrying for %ds", RETRY_TIMEOUT)
                         raise
                     logger.error("Florence-2 inference failed, retrying:\n%s", traceback.format_exc())
                     if DEVICE == "cuda":

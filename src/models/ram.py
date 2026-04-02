@@ -6,7 +6,7 @@ from threading import Event
 import torch
 from PIL import Image
 
-from config import DEVICE
+from config import DEVICE, RETRY_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class RAMModel:
         if not self.is_ready():
             return []
         from ram import inference_ram
+        retry_since = None
         while True:
             try:
                 model_dtype = next(self._model.parameters()).dtype
@@ -66,6 +67,12 @@ class RAMModel:
                 return [t.strip() for t in tags_str.split("|") if t.strip()]
             except Exception:
                 if cancel and cancel.is_set():
+                    raise
+                now = time.monotonic()
+                if retry_since is None:
+                    retry_since = now
+                elif now - retry_since >= RETRY_TIMEOUT:
+                    logger.error("RAM++ giving up after retrying for %ds", RETRY_TIMEOUT)
                     raise
                 logger.error("RAM++ inference failed, retrying:\n%s", traceback.format_exc())
                 if DEVICE == "cuda":

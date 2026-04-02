@@ -6,7 +6,7 @@ from threading import Event
 
 import torch
 
-from config import DEVICE, MODELS_AVAILABLE
+from config import DEVICE, MODELS_AVAILABLE, RETRY_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ class OCRCorrectionModel:
     def _correct_sync(self, text: str, cancel: Event | None) -> str:
         logger.debug("OCR correction started")
         tok = self._tokenizer
+        retry_since = None
         while True:
             try:
                 inputs = tok(text, return_tensors="pt", truncation=True).to(DEVICE)
@@ -74,6 +75,12 @@ class OCRCorrectionModel:
                 return corrected
             except Exception:
                 if cancel and cancel.is_set():
+                    raise
+                now = time.monotonic()
+                if retry_since is None:
+                    retry_since = now
+                elif now - retry_since >= RETRY_TIMEOUT:
+                    logger.error("OCR correction giving up after retrying for %ds", RETRY_TIMEOUT)
                     raise
                 logger.error("OCR correction failed, retrying:\n%s", traceback.format_exc())
                 if DEVICE == "cuda":

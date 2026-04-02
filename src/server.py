@@ -7,7 +7,11 @@ Image Analysis Server
 """
 
 import os
+import select
+import socket
 import logging
+import threading
+from threading import Event
 
 from flask import Flask, request, jsonify
 
@@ -42,6 +46,26 @@ logger.info("Model device report")
 for name, device in report.items():
     logger.info("  %-16s: %s", name, device)
 logger.info("=" * 56)
+
+
+# ── Client disconnect detection ───────────────────────────────────────────────
+
+def _watch_disconnect(sock, cancel: Event) -> None:
+    """
+    Daemon thread: sets cancel when the client socket closes.
+    Polls with select so it doesn't spin, then peeks to confirm EOF.
+    """
+    while not cancel.is_set():
+        try:
+            readable, _, _ = select.select([sock], [], [], 0.5)
+            if readable:
+                if not sock.recv(1, socket.MSG_PEEK):
+                    logger.debug("Client disconnected — cancelling inference")
+                    cancel.set()
+                    return
+        except Exception:
+            cancel.set()
+            return
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -91,10 +115,12 @@ def analyse():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    try:
-        return jsonify(controller.analyse(image))
-    except TimeoutError as e:
-        return jsonify({"error": str(e)}), 504
+    cancel = Event()
+    sock = request.environ.get("gunicorn.socket")
+    if sock is not None:
+        threading.Thread(target=_watch_disconnect, args=(sock, cancel), daemon=True).start()
+
+    return jsonify(controller.analyse(image, cancel))
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

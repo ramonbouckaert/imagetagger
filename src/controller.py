@@ -7,12 +7,12 @@ import io
 import re
 import logging
 import traceback
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait, FIRST_EXCEPTION
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from threading import Event
 
 from PIL import Image
 
-from config import MAX_IMAGE_EDGE, REQUEST_TIMEOUT, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
+from config import MAX_IMAGE_EDGE, SIGLIP_TAG_THRESHOLD, RAM_TAG_THRESHOLD
 from models import Florence2Model, SigLIPModel, RAMModel, OCRCorrectionModel, SpacyModel
 
 logger = logging.getLogger(__name__)
@@ -137,29 +137,14 @@ class AnalysisController:
             logger.debug("Downscaled image to %s", img.size)
         return img
 
-    def analyse(self, image: Image.Image, timeout: int = REQUEST_TIMEOUT) -> dict:
+    def analyse(self, image: Image.Image, cancel: Event | None = None) -> dict:
         """
         Run all models and return the merged result dict.
-        Raises TimeoutError if the total wall time exceeds timeout seconds.
-        The cancel event is set on timeout so retry loops in models stop promptly.
+        Queued requests wait indefinitely. Pass a cancel Event to interrupt
+        retry loops (e.g. on client disconnect).
         """
-        cancel = Event()
-
-        def _wait(futures, remaining):
-            done, not_done = futures_wait(futures, timeout=remaining)
-            if not_done:
-                cancel.set()
-                raise TimeoutError(f"Analysis timed out after {timeout}s")
-
-        import time as _time
-        deadline = _time.monotonic() + timeout
-
-        def _remaining():
-            left = deadline - _time.monotonic()
-            if left <= 0:
-                cancel.set()
-                raise TimeoutError(f"Analysis timed out after {timeout}s")
-            return left
+        if cancel is None:
+            cancel = Event()
 
         # ── Phase 1: Florence + SigLIP + RAM in parallel ──────────────────────
         florence_future = self._florence.analyse(image, cancel)
@@ -173,7 +158,7 @@ class AnalysisController:
         )
 
         phase1 = [f for f in (florence_future, siglip_future, ram_future) if f is not None]
-        _wait(phase1, _remaining())
+        futures_wait(phase1)
 
         florence_result = florence_future.result()
         cap = florence_result.description
@@ -195,7 +180,6 @@ class AnalysisController:
             if cap_quotes and self._spacy.is_ready() else None
         )
 
-        _wait([ocr_future], _remaining())
         ocr_text = ocr_future.result()
 
         # ── Phase 3: spaCy on corrected OCR text ──────────────────────────────
@@ -209,7 +193,7 @@ class AnalysisController:
             if f is not None
         ]
         if spacy_futures:
-            _wait(spacy_futures, _remaining())
+            futures_wait(spacy_futures)
 
         # ── Merge ──────────────────────────────────────────────────────────────
         tags: list[str] = []

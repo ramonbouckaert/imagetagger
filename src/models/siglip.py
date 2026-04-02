@@ -6,7 +6,7 @@ from threading import Event
 import torch
 from PIL import Image
 
-from config import DEVICE, MODELS_AVAILABLE
+from config import DEVICE, MODELS_AVAILABLE, RETRY_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ class SigLIPModel:
         logger.debug("SigLIP classify started")
         if not self.is_ready():
             return []
+        retry_since = None
         while True:
             try:
                 img_inputs = self._processor(images=image, return_tensors="pt")
@@ -77,6 +78,12 @@ class SigLIPModel:
                 return [tag for tag, p in zip(SIGLIP_CANDIDATE_TAGS, probs) if p >= threshold]
             except Exception:
                 if cancel and cancel.is_set():
+                    raise
+                now = time.monotonic()
+                if retry_since is None:
+                    retry_since = now
+                elif now - retry_since >= RETRY_TIMEOUT:
+                    logger.error("SigLIP giving up after retrying for %ds", RETRY_TIMEOUT)
                     raise
                 logger.error("SigLIP inference failed, retrying:\n%s", traceback.format_exc())
                 if DEVICE == "cuda":
