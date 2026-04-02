@@ -45,60 +45,79 @@ class SpacyModel:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def noun_chunk_tags(self, text: str) -> list[str]:
-        """Extract lowercased noun chunks from text, stripping determiners."""
+    def noun_chunk_tags(self, texts: list[str]) -> list[str]:
+        """Extract lowercased noun chunks from texts, stripping determiners."""
         logger.debug("spaCy noun chunks started")
-        if not self.is_ready() or not text:
+        if not self.is_ready() or not texts:
             return []
         try:
-            doc = self._nlp(text)
             tags: list[str] = []
-            for chunk in doc.noun_chunks:
-                t = " ".join(tok.text for tok in chunk if tok.dep_ not in ("det", "poss")).strip().lower()
-                if t and not _CAPTION_BLOCKLIST.intersection(t.split()):
-                    tags.append(t)
+            for doc in self._nlp.pipe(texts):
+                for chunk in doc.noun_chunks:
+                    t = " ".join(tok.text for tok in chunk if tok.dep_ not in ("det", "poss")).strip().lower()
+                    if t and not _CAPTION_BLOCKLIST.intersection(t.split()):
+                        tags.append(t)
             logger.debug("spaCy noun chunks complete: %s", tags)
             return tags
         except Exception:
             logger.error("spaCy noun chunk extraction failed:\n%s", traceback.format_exc())
             return []
 
-    def noun_tags(self, text: str) -> list[str]:
-        """Extract individual lowercased nouns and proper nouns from text."""
+    def noun_tags(self, texts: list[str]) -> list[str]:
+        """Extract individual lowercased nouns and proper nouns from texts."""
         logger.debug("spaCy noun extraction started")
-        if not self.is_ready() or not text:
+        if not self.is_ready() or not texts:
             return []
         try:
-            doc = self._nlp(text)
             tags: list[str] = []
             seen: set[str] = set()
-            for token in doc:
-                if token.pos_ in ("NOUN", "PROPN"):
-                    word = token.text.lower()
-                    if word not in _CAPTION_BLOCKLIST and word not in seen:
-                        tags.append(word)
-                        seen.add(word)
+            for doc in self._nlp.pipe(texts):
+                for token in doc:
+                    if token.pos_ in ("NOUN", "PROPN"):
+                        word = token.text.lower()
+                        if word not in _CAPTION_BLOCKLIST and word not in seen:
+                            tags.append(word)
+                            seen.add(word)
             logger.debug("spaCy noun extraction complete: %s", tags)
             return tags
         except Exception:
             logger.error("spaCy noun extraction failed:\n%s", traceback.format_exc())
             return []
 
-    def word_tags(self, text: str) -> list[str]:
-        """Extract lowercased nouns, proper nouns, adjectives, and verbs from text."""
-        logger.debug("spaCy word extraction started")
-        if not self.is_ready() or not text:
+    def sentence_tags(self, texts: list[str]) -> list[str]:
+        """Split each text into sentences independently and return each as a lowercased tag.
+        Sentences over 12 words are discarded."""
+        logger.debug("spaCy sentence splitting started")
+        if not self.is_ready() or not texts:
             return []
         try:
-            doc = self._nlp(text)
+            tags: list[str] = []
+            for doc in self._nlp.pipe(texts):
+                for sent in doc.sents:
+                    t = sent.text.strip()
+                    if t and len(sent) <= 12:
+                        tags.append(t.strip('.,!?;:\'"').strip().lower())
+            logger.debug("spaCy sentence splitting complete: %s", tags)
+            return tags
+        except Exception:
+            logger.error("spaCy sentence splitting failed:\n%s", traceback.format_exc())
+            return []
+
+    def word_tags(self, texts: list[str]) -> list[str]:
+        """Extract lowercased nouns, proper nouns, adjectives, and verbs from texts."""
+        logger.debug("spaCy word extraction started")
+        if not self.is_ready() or not texts:
+            return []
+        try:
             tags: list[str] = []
             seen: set[str] = set()
-            for token in doc:
-                if token.pos_ in ("NOUN", "PROPN", "ADJ", "VERB"):
-                    word = token.text.lower()
-                    if word not in _OCR_BLOCKLIST and word not in seen:
-                        tags.append(word)
-                        seen.add(word)
+            for doc in self._nlp.pipe(texts):
+                for token in doc:
+                    if token.pos_ in ("NOUN", "PROPN", "ADJ", "VERB"):
+                        word = token.text.lower()
+                        if word not in _OCR_BLOCKLIST and word not in seen:
+                            tags.append(word)
+                            seen.add(word)
             logger.debug("spaCy word extraction complete: %s", tags)
             return tags
         except Exception:

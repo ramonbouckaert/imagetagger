@@ -162,20 +162,24 @@ class AnalysisController:
 
         florence_result = florence_future.result()
         cap = florence_result.description
-        cap_quotes = " ".join(re.findall(r'"([^"]+)"', cap))
+        cap_quotes = re.findall(r'"([^"]+)"', cap)
 
         # ── Phase 2: OCR correction + caption spaCy (overlapping) ─────────────
         ocr_future = self._ocr_correction.correct(florence_result.ocr_raw, cancel)
 
         cap_chunks_future = (
-            self._pool.submit(self._spacy.noun_chunk_tags, cap)
+            self._pool.submit(self._spacy.noun_chunk_tags, [cap])
             if cap and self._spacy.is_ready() else None
         )
         cap_nouns_future = (
-            self._pool.submit(self._spacy.noun_tags, cap)
+            self._pool.submit(self._spacy.noun_tags, [cap])
             if cap and self._spacy.is_ready() else None
         )
         cap_quotes_future = (
+            self._pool.submit(self._spacy.sentence_tags, cap_quotes)
+            if cap_quotes and self._spacy.is_ready() else None
+        )
+        cap_quotes_words_future = (
             self._pool.submit(self._spacy.word_tags, cap_quotes)
             if cap_quotes and self._spacy.is_ready() else None
         )
@@ -183,13 +187,13 @@ class AnalysisController:
         ocr_text = ocr_future.result()
 
         # ── Phase 3: spaCy on corrected OCR text ──────────────────────────────
-        ocr_nouns_future = (
-            self._pool.submit(self._spacy.word_tags, ocr_text)
+        ocr_words_future = (
+            self._pool.submit(self._spacy.word_tags, [ocr_text])
             if ocr_text and self._spacy.is_ready() else None
         )
 
         spacy_futures = [
-            f for f in (cap_chunks_future, cap_nouns_future, cap_quotes_future, ocr_nouns_future)
+            f for f in (cap_chunks_future, cap_nouns_future, cap_quotes_future, cap_quotes_words_future, ocr_words_future)
             if f is not None
         ]
         if spacy_futures:
@@ -211,7 +215,7 @@ class AnalysisController:
             _add(tag)
         for tag in (ram_future.result() if ram_future else []):
             _add(tag)
-        for future in (cap_chunks_future, cap_nouns_future, cap_quotes_future, ocr_nouns_future):
+        for future in (cap_chunks_future, cap_nouns_future, cap_quotes_future, cap_quotes_words_future, ocr_words_future):
             if future:
                 for tag in future.result():
                     _add(tag)
