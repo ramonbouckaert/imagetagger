@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", category=FutureWarning, module="fairscale")
 warnings.filterwarnings("ignore", message="Asking to truncate to max_length but no maximum length is provided")
+warnings.filterwarnings("ignore", message="The new embeddings will be initialized from a multivariate normal distribution")
 
 # Models are downloaded by the entrypoint before the server starts.
 # Default to offline mode so every startup doesn't hit HuggingFace to
@@ -455,6 +456,7 @@ def load_ocr_correction_model() -> None:
     _ocr_correction_tokenizer = AutoTokenizer.from_pretrained(OCR_CORRECTION_MODEL_ID)
     _ocr_correction_pipeline = AutoModelForSeq2SeqLM.from_pretrained(
         OCR_CORRECTION_MODEL_ID,
+        tie_word_embeddings=False,
         dtype=dtype,
     ).to(DEVICE)
     _ocr_correction_pipeline.eval()
