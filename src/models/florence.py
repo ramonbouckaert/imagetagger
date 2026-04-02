@@ -3,6 +3,7 @@ import re
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from queue import Queue
 
 import torch
 from PIL import Image
@@ -21,39 +22,53 @@ class FlorenceResult:
 
 class Florence2Model:
     """
-    Singleton for Florence-2. NOT thread-safe — all inference is serialised
-    through a dedicated single-thread executor.
+    Manages a pool of Florence-2 instances. Jobs are queued and dispatched to
+    the next available instance, so up to num_instances tasks run in parallel.
+
+    Each instance is NOT thread-safe internally; the pool ensures only one job
+    runs on each instance at a time.
     """
 
-    def __init__(self, model_id: str, enabled: bool = True) -> None:
-        self._enabled   = enabled
-        self._processor = None
-        self._model     = None
-        self._executor  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="florence")
+    def __init__(self, model_id: str, enabled: bool = True, num_instances: int = 2) -> None:
+        self._enabled  = enabled
+        self._instances: list[tuple] = []   # (model, processor) — for introspection
+        self._pool     = Queue()
+        # Allow more queued jobs than instances so callers are never rejected.
+        self._executor = ThreadPoolExecutor(max_workers=num_instances * 4, thread_name_prefix="florence")
         if enabled and MODELS_AVAILABLE:
-            self._load(model_id)
+            for i in range(num_instances):
+                pair = self._load_instance(model_id, i)
+                if pair is not None:
+                    self._instances.append(pair)
+                    self._pool.put(pair)
 
-    def _load(self, model_id: str) -> None:
+    def _load_instance(self, model_id: str, index: int) -> tuple | None:
         from transformers import AutoProcessor, Florence2ForConditionalGeneration
-        logger.info("Loading Florence-2 model (%s) on %s ...", model_id, DEVICE)
-        self._processor = AutoProcessor.from_pretrained(model_id)
-        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-        self._model = Florence2ForConditionalGeneration.from_pretrained(
-            model_id, dtype=dtype,
-        ).to(DEVICE)
-        self._model.eval()
-        logger.info("Florence-2 model loaded.")
+        try:
+            logger.info("Loading Florence-2 instance %d (%s) on %s ...", index, model_id, DEVICE)
+            processor = AutoProcessor.from_pretrained(model_id)
+            dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+            model = Florence2ForConditionalGeneration.from_pretrained(
+                model_id, dtype=dtype,
+            ).to(DEVICE)
+            model.eval()
+            logger.info("Florence-2 instance %d loaded.", index)
+            return (model, processor)
+        except Exception:
+            logger.error("Florence-2 instance %d failed to load:\n%s", index, traceback.format_exc())
+            return None
 
     def is_ready(self) -> bool:
-        return self._model is not None and self._processor is not None
+        return len(self._instances) > 0
 
     def is_enabled(self) -> bool:
         return self._enabled
 
     def analyse(self, image: Image.Image) -> "Future[FlorenceResult]":
         """
-        Submit OD + caption + OCR to the private single-thread executor.
-        Returns a Future immediately; caller blocks on .result() when needed.
+        Submit OD + caption + OCR to the executor. The job will block until a
+        model instance is free, then run all three tasks on that instance.
+        Returns a Future immediately.
         """
         if not self.is_ready():
             f: Future[FlorenceResult] = Future()
@@ -62,21 +77,34 @@ class Florence2Model:
         return self._executor.submit(self._run_all, image)
 
     def _run_all(self, image: Image.Image) -> FlorenceResult:
-        return FlorenceResult(
-            od_tags=self._od(image),
-            description=self._caption(image),
-            ocr_raw=self._ocr(image),
-        )
+        model, processor = self._pool.get()
+        try:
+            return FlorenceResult(
+                od_tags=self._od(model, processor, image),
+                description=self._caption(model, processor, image),
+                ocr_raw=self._ocr(model, processor, image),
+            )
+        finally:
+            self._pool.put((model, processor))
 
-    def _generate(self, task: str, image: Image.Image, *, max_new_tokens: int = 1024, num_beams: int = 3) -> str:
-        inputs = self._processor(text=task, images=image, return_tensors="pt")
-        model_dtype = next(self._model.parameters()).dtype
+    def _generate(
+        self,
+        model,
+        processor,
+        task: str,
+        image: Image.Image,
+        *,
+        max_new_tokens: int = 1024,
+        num_beams: int = 3,
+    ) -> str:
+        inputs = processor(text=task, images=image, return_tensors="pt")
+        model_dtype = next(model.parameters()).dtype
         inputs = {
             k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
             for k, v in inputs.items()
         }
         with torch.no_grad():
-            generated_ids = self._model.generate(
+            generated_ids = model.generate(
                 input_ids=inputs["input_ids"],
                 pixel_values=inputs["pixel_values"],
                 max_new_tokens=max_new_tokens,
@@ -84,33 +112,33 @@ class Florence2Model:
                 num_beams=num_beams,
                 do_sample=False,
             )
-        generated_text = self._processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed = self._processor.post_process_generation(
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        parsed = processor.post_process_generation(
             generated_text, task=task, image_size=(image.width, image.height),
         )
         raw = parsed.get(task, "")
         cleaned = re.sub(r"<[^>]*>", "", raw)
         return re.sub(r"[<>]", "", cleaned).strip()
 
-    def _od(self, image: Image.Image) -> list[str]:
+    def _od(self, model, processor, image: Image.Image) -> list[str]:
         logger.debug("Florence OD started")
         try:
-            inputs = self._processor(text="<OD>", images=image, return_tensors="pt")
-            model_dtype = next(self._model.parameters()).dtype
+            inputs = processor(text="<OD>", images=image, return_tensors="pt")
+            model_dtype = next(model.parameters()).dtype
             inputs = {
                 k: v.to(DEVICE, dtype=model_dtype) if v.is_floating_point() else v.to(DEVICE)
                 for k, v in inputs.items()
             }
             with torch.no_grad():
-                generated_ids = self._model.generate(
+                generated_ids = model.generate(
                     input_ids=inputs["input_ids"],
                     pixel_values=inputs["pixel_values"],
                     max_new_tokens=1024,
                     num_beams=3,
                     do_sample=False,
                 )
-            generated_text = self._processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-            parsed = self._processor.post_process_generation(
+            generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            parsed = processor.post_process_generation(
                 generated_text, task="<OD>", image_size=(image.width, image.height),
             )
             labels = parsed.get("<OD>", {}).get("labels", [])
@@ -128,10 +156,10 @@ class Florence2Model:
                 torch.cuda.empty_cache()
             return []
 
-    def _caption(self, image: Image.Image) -> str:
+    def _caption(self, model, processor, image: Image.Image) -> str:
         logger.debug("Florence CAP started")
         try:
-            raw = re.sub(r"\s+", " ", self._generate("<MORE_DETAILED_CAPTION>", image)).strip()
+            raw = re.sub(r"\s+", " ", self._generate(model, processor, "<MORE_DETAILED_CAPTION>", image)).strip()
             logger.debug("Florence CAP complete")
             return re.sub(
                 r"^The image \w+\s+(.)",
@@ -144,10 +172,10 @@ class Florence2Model:
                 torch.cuda.empty_cache()
             return ""
 
-    def _ocr(self, image: Image.Image) -> str:
+    def _ocr(self, model, processor, image: Image.Image) -> str:
         logger.debug("Florence OCR started")
         try:
-            raw = self._generate("<OCR>", image, max_new_tokens=256, num_beams=3)
+            raw = self._generate(model, processor, "<OCR>", image, max_new_tokens=256, num_beams=3)
             logger.debug("Florence OCR complete")
             text = re.sub(r"\s+", " ", raw.encode("ascii", errors="ignore").decode()).strip()
             return text if re.search(r"[a-zA-Z0-9]{2}", text) else ""
@@ -160,9 +188,9 @@ class Florence2Model:
     def device_str(self) -> str:
         if not self._enabled:
             return "disabled"
-        if self._model is None:
+        if not self._instances:
             return "not loaded"
         try:
-            return str(next(self._model.parameters()).device)
+            return str(next(self._instances[0][0].parameters()).device)
         except StopIteration:
             return DEVICE
