@@ -113,8 +113,10 @@ sub _process_file {
     printf "[result] description: %s\n", $description || '(none)';
     printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
 
+    my ($atime, $mtime) = (stat($path))[8, 9];
+
     my $exif     = Image::ExifTool->new();
-    $exif->Options(Preserve => 1);
+    $exif->Options(Lang => 'en', Preserve => 1);
     my $info     = $exif->ImageInfo($path, 'XMP:Subject');
     my $existing = $info->{'Subject'} // [];
     $existing    = [$existing] unless ref $existing eq 'ARRAY';
@@ -131,6 +133,7 @@ sub _process_file {
     }
 
     my ($ok, $err) = $exif->WriteInfo($path);
+    utime($atime, $mtime, $path) if $ok;
     if ($ok) {
         print "[xmp] written to $path\n";
     } else {
