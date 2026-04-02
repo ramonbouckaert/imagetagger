@@ -8,6 +8,7 @@ use lib $Bin;
 use File::Basename qw(basename);
 use Getopt::Long   qw(GetOptions);
 use Linux::Inotify2;
+use Mojo::IOLoop;
 use Tagger;
 
 my $watch_dir = $ENV{WATCH_DIR}       // '.';
@@ -54,24 +55,17 @@ my $tagger = Tagger->new(
     workers  => $workers,
 );
 
-my $shutting_down = 0;
-
-$SIG{INT} = $SIG{TERM} = sub {
-    if ($shutting_down) {
-        warn "\nSecond interrupt, forcing exit.\n";
-        exit 1;
-    }
-    $shutting_down = 1;
-    print "\nInterrupt received, cancelling queued and in-flight jobs...\n";
-    eval { $tagger->cancel(); 1 }
-        or warn "[error] cancel failed: $@\n";
-    exit 0;
-};
+my $shutting_down   = 0;
+my $shutdown_started = 0;
 
 my $inotify = Linux::Inotify2->new()
     or die "Cannot initialise inotify: $!\n";
 
+$inotify->blocking(0);
+
 my %watches;
+my $inotify_fh = $inotify->fh;
+my $reactor    = Mojo::IOLoop->singleton->reactor;
 
 sub is_hidden_dir {
     my ($path) = @_;
@@ -127,11 +121,7 @@ sub watch_dir {
         return;
     }
 
-    $watches{$dir} = {
-        watch => $watch,
-        depth => $depth,
-    };
-
+    $watches{$dir} = $watch;
     print "Watching $dir\n";
 }
 
@@ -163,6 +153,41 @@ sub refresh_one_level_watches {
     closedir($dh);
 }
 
+sub begin_shutdown {
+    return if $shutdown_started;
+    $shutdown_started = 1;
+
+    $reactor->remove($inotify_fh);
+
+    eval { $tagger->cancel(); 1 }
+        or warn "[error] cancel failed: $@\n";
+
+    if (my $p = $tagger->{drain_promise}) {
+        $p->finally(sub {
+            Mojo::IOLoop->stop if Mojo::IOLoop->is_running;
+        });
+    } else {
+        Mojo::IOLoop->stop if Mojo::IOLoop->is_running;
+    }
+}
+
+$SIG{INT} = $SIG{TERM} = sub {
+    if ($shutting_down) {
+        warn "\nSecond interrupt, forcing exit.\n";
+        exit 1;
+    }
+
+    $shutting_down = 1;
+    print "\nInterrupt received, cancelling queued and in-flight jobs...\n";
+
+    if (Mojo::IOLoop->is_running) {
+        Mojo::IOLoop->next_tick(\&begin_shutdown);
+    } else {
+        begin_shutdown();
+        exit 0;
+    }
+};
+
 $inotify->on_overflow(sub {
     warn "[warn] inotify queue overflow, refreshing watches only...\n";
     refresh_one_level_watches();
@@ -182,9 +207,12 @@ while (my $entry = readdir($dh)) {
 }
 closedir($dh);
 
+$reactor->io($inotify_fh => sub {
+    eval { $inotify->poll };
+    warn "[error] inotify poll failed: $@\n" if $@;
+})->watch($inotify_fh, 1, 0);
+
 printf "Started %d workers\n", $workers;
 print  "Endpoint: $endpoint\n";
 
-while (!$shutting_down) {
-    $inotify->poll;
-}
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
