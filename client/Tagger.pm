@@ -12,6 +12,8 @@ use HTTP::Request::Common qw(POST);
 use JSON                  qw(decode_json);
 use Image::ExifTool;
 
+$| = 1;  # unbuffer stdout so journald sees lines as they are printed
+
 my $DEBOUNCE_SECS = 5;
 
 # Shared across all worker threads.
