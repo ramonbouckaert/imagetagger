@@ -2,15 +2,12 @@ package Tagger;
 use strict;
 use warnings;
 
-use threads;
-use Thread::Queue;
-use threads::shared qw(shared_clone);
-
-use File::Basename        qw(basename);
-use LWP::UserAgent;
-use HTTP::Request::Common qw(POST);
-use JSON                  qw(decode_json);
+use File::Basename qw(basename);
+use JSON           qw(decode_json);
 use Image::ExifTool;
+use Mojo::IOLoop;
+use Mojo::Promise;
+use Mojo::UserAgent;
 
 $| = 1;
 binmode STDOUT, ':encoding(UTF-8)';
@@ -18,24 +15,30 @@ binmode STDERR, ':encoding(UTF-8)';
 
 my $DEBOUNCE_SECS = 5;
 
-our %last_written : shared;
-our %inflight     : shared;
-
 sub new {
     my ($class, %args) = @_;
-    my $self = bless {
-        endpoint => $args{endpoint} // 'http://localhost:9100/analyse',
-        queue    => Thread::Queue->new(),
-        pool     => [],
-        state    => shared_clone({
-            cancel       => 0,
-            stop_cleaner => 0,
-        }),
-    }, $class;
 
-    my $n = $args{workers} // 32;
-    push @{ $self->{pool} }, threads->create(sub { $self->_worker() }) for 1..$n;
-    $self->{cleaner} = threads->create(sub { $self->_cleaner() });
+    my $max_inflight = $args{workers} // 32;
+    my $timeout      = $args{timeout} // 5;
+
+    my $ua = Mojo::UserAgent->new;
+    $ua->connect_timeout($timeout);
+    $ua->request_timeout($timeout);
+    $ua->inactivity_timeout($timeout);
+    $ua->max_connections($max_inflight);
+
+    my $self = bless {
+        endpoint      => $args{endpoint} // 'http://localhost:9100/analyse',
+        max_inflight  => $max_inflight,
+        ua            => $ua,
+        pending       => [],
+        active        => 0,
+        cancel        => 0,
+        draining      => 0,
+        drain_promise => undef,
+        inflight      => {},
+        last_written  => {},
+    }, $class;
 
     return $self;
 }
@@ -43,197 +46,171 @@ sub new {
 sub enqueue {
     my ($self, $path) = @_;
     return unless $path =~ /\.avif$/i;
+    return if $self->{cancel};
 
-    {
-        lock(%{ $self->{state} });
-        return if $self->{state}->{cancel};
+    $self->_prune_last_written;
+
+    return if $self->{inflight}{$path};
+
+    if (exists $self->{last_written}{$path}
+        && (time() - $self->{last_written}{$path}) < $DEBOUNCE_SECS) {
+        print "[skip] $path (debounce)\n";
+        return;
     }
 
-    {
-        lock(%last_written);
-        lock(%inflight);
+    $self->{last_written}{$path} = time();
+    $self->{inflight}{$path}     = 1;
 
-        return if $inflight{$path};
+    push @{ $self->{pending} }, $path;
+    printf "[queued] %s (pending: %d)\n", $path, scalar @{ $self->{pending} };
 
-        if (exists $last_written{$path} && (time() - $last_written{$path}) < $DEBOUNCE_SECS) {
-            print "[skip] $path (debounce)\n";
-            return;
-        }
-        $last_written{$path} = time();
-        $inflight{$path}     = 1;
-    }
-    $self->{queue}->enqueue($path);
-    printf "[queued] %s (pending: %d)\n", $path, ($self->{queue}->pending() // 0);
+    $self->_pump;
 }
 
 sub drain {
     my ($self) = @_;
-    $self->{queue}->end();
-    $_->join() for @{ $self->{pool} };
 
-    {
-        lock(%{ $self->{state} });
-        $self->{state}->{stop_cleaner} = 1;
-    }
-    $self->{cleaner}->join() if $self->{cleaner};
+    $self->{draining} = 1;
+    $self->_pump;
+
+    return if !$self->{active} && !@{ $self->{pending} };
+
+    $self->{drain_promise} ||= Mojo::Promise->new;
+    $self->{drain_promise}->wait;
 }
 
 sub cancel {
     my ($self) = @_;
+    return if $self->{cancel};
 
-    {
-        lock(%{ $self->{state} });
-        return if $self->{state}->{cancel};
-        $self->{state}->{cancel}       = 1;
-        $self->{state}->{stop_cleaner} = 1;
-    }
+    $self->{cancel} = 1;
 
-    my @dropped;
-    {
-        lock($self->{queue});
-        my $pending = $self->{queue}->pending() // 0;
-        @dropped = $pending ? $self->{queue}->extract(0, $pending) : ();
-        $self->{queue}->end();
-    }
-
-    if (@dropped) {
-        lock(%last_written);
-        lock(%inflight);
-        delete $last_written{$_} for @dropped;
-        delete $inflight{$_}     for @dropped;
-    }
+    my @dropped = @{ delete $self->{pending} || [] };
+    delete $self->{inflight}{$_}     for @dropped;
+    delete $self->{last_written}{$_} for @dropped;
 
     printf "[cancel] dropped %d queued job(s)\n", scalar(@dropped);
 
-    $_->kill('USR1') for grep { $_->is_running() } @{ $self->{pool} };
+    if (!$self->{active}) {
+        $self->_resolve_drain;
+        return;
+    }
 
-    $_->join() for @{ $self->{pool} };
-    $self->{cleaner}->join() if $self->{cleaner};
+    $self->{drain_promise} ||= Mojo::Promise->new;
+    $self->{drain_promise}->wait;
 }
 
-sub _worker {
+sub _pump {
     my ($self) = @_;
 
-    my $ua = LWP::UserAgent->new(
-        timeout    => 5,
-        keep_alive => 0,
-    );
+    while (
+        !$self->{cancel}
+        && $self->{active} < $self->{max_inflight}
+        && @{ $self->{pending} }
+    ) {
+        my $path = shift @{ $self->{pending} };
+        $self->{active}++;
 
-    local $SIG{USR1} = sub { };   # harmless when idle
-
-    while (1) {
-        {
-            lock(%{ $self->{state} });
-            last if $self->{state}->{cancel};
-        }
-
-        my $path = $self->{queue}->dequeue_timed(0.5);
-        next unless defined $path;
-
-        my $ok = eval {
-            $self->_process_file($path, $ua);
-            1;
-        };
-
-        if (!$ok) {
-            my $e = $@ // 'unknown error';
-            if ($e =~ /__TAGGER_CANCEL__/) {
-                print "[cancel] worker stopping\n";
-                last;
-            }
-            warn "[error] worker died on $path: $e\n";
-        }
-
-        {
-            lock(%{ $self->{state} });
-            last if $self->{state}->{cancel};
-        }
+        $self->_process_file_p($path)
+            ->catch(sub {
+                my ($err) = @_;
+                $err = 'unknown error' unless defined $err;
+                chomp $err;
+                warn "[error] worker died on $path: $err\n";
+            })
+            ->finally(sub {
+                $self->{active}--;
+                $self->_clear_inflight($path);
+                $self->_pump;
+                $self->_resolve_drain_if_idle;
+            });
     }
+
+    $self->_resolve_drain_if_idle;
 }
 
-sub _cleaner {
-    my ($self) = @_;
-
-    while (1) {
-        sleep($DEBOUNCE_SECS * 2);
-
-        {
-            lock(%{ $self->{state} });
-            last if $self->{state}->{stop_cleaner};
-        }
-
-        lock(%last_written);
-        lock(%inflight);
-
-        my $cutoff = time() - $DEBOUNCE_SECS;
-        delete $last_written{$_}
-            for grep { !$inflight{$_} && $last_written{$_} < $cutoff } keys %last_written;
-    }
-}
-
-sub _process_file {
-    my ($self, $path, $ua) = @_;
-
-    my $phase = 'request';
-    my $cancel_after_write = 0;
-
-    local $SIG{USR1} = sub {
-        if ($phase eq 'writing') {
-            $cancel_after_write = 1;
-            return;
-        }
-        die "__TAGGER_CANCEL__\n";
-    };
+sub _process_file_p {
+    my ($self, $path) = @_;
 
     print "[upload] $path\n";
 
-    my $response = $ua->request(
-        POST(
-            $self->{endpoint},
-            Content_Type => 'multipart/form-data',
-            Content      => [
-                image => [$path, basename($path), 'Content-Type' => 'image/avif'],
-            ],
-        )
-    );
+    return $self->{ua}->post_p(
+        $self->{endpoint} => form => {
+            image => {
+                file           => $path,
+                filename       => basename($path),
+                'Content-Type' => 'image/avif',
+            },
+        }
+    )->then(sub {
+        my ($tx) = @_;
 
-    {
-        lock(%{ $self->{state} });
-        if ($self->{state}->{cancel}) {
+        if ($self->{cancel}) {
             print "[cancel] abandoning $path after request\n";
-            _clear_inflight($path);
             return;
         }
-    }
 
-    unless ($response->is_success) {
-        warn "[error] Upload failed for $path: " . $response->status_line . "\n";
-        warn "        " . $response->decoded_content . "\n" if $response->decoded_content;
-        _clear_inflight($path);
-        return;
-    }
+        my $res = $tx->result;
 
-    my $data = eval { decode_json($response->decoded_content) };
-    if ($@) {
-        warn "[error] Could not parse JSON response for $path: $@\n";
-        _clear_inflight($path);
-        return;
-    }
+        unless ($res->is_success) {
+            my $status = defined $res->code ? $res->code : '(no status)';
+            my $msg    = $res->message // '';
+            warn "[error] Upload failed for $path: $status $msg\n";
 
-    my $description = $data->{description} // '';
-    my @tags        = @{ $data->{tags} // [] };
+            my $body = $res->body;
+            warn "        $body\n" if defined $body && length $body;
+            return;
+        }
 
-    printf "[result] description: %s\n", $description || '(none)';
-    printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
+        my $data = eval { decode_json($res->body) };
+        if ($@) {
+            warn "[error] Could not parse JSON response for $path: $@\n";
+            return;
+        }
 
-    {
-        lock(%{ $self->{state} });
-        if ($self->{state}->{cancel}) {
+        my $description = $data->{description} // '';
+        my @tags        = @{ $data->{tags} // [] };
+
+        printf "[result] description: %s\n", $description || '(none)';
+        printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
+
+        if ($self->{cancel}) {
             print "[cancel] skipping metadata write for $path\n";
-            _clear_inflight($path);
             return;
         }
-    }
+
+        return $self->_write_metadata_p($path, $description, \@tags);
+    });
+}
+
+sub _write_metadata_p {
+    my ($self, $path, $description, $tags) = @_;
+
+    return Mojo::IOLoop->subprocess->run_p(sub {
+        return _write_metadata_sync($path, $description, $tags);
+    })->then(sub {
+        my ($result) = @_;
+
+        my $ok             = $result->{ok}             // 0;
+        my $err            = $result->{err}            // '';
+        my $new_tags       = $result->{new_tags}       // 0;
+        my $existing_count = $result->{existing_count} // 0;
+
+        printf "[result] %d new tag(s) to add (skipping %d already present)\n",
+            $new_tags, $existing_count;
+
+        if ($ok) {
+            print "[xmp] written to $path\n";
+        } else {
+            warn "[error] ExifTool failed to write $path: $err\n";
+        }
+
+        return;
+    });
+}
+
+sub _write_metadata_sync {
+    my ($path, $description, $tags) = @_;
 
     my ($atime, $mtime) = (stat($path))[8, 9];
 
@@ -245,10 +222,7 @@ sub _process_file {
     $existing    = [$existing] unless ref $existing eq 'ARRAY';
     my %existing_lc = map { lc($_) => 1 } @$existing;
 
-    my @new_tags = grep { !$existing_lc{lc($_)} } @tags;
-
-    printf "[result] %d new tag(s) to add (skipping %d already present)\n",
-        scalar(@new_tags), scalar(@tags) - scalar(@new_tags);
+    my @new_tags = grep { !$existing_lc{lc($_)} } @$tags;
 
     $exif->SetNewValue('XMP:Description', $description, { Lang => 'en' })
         if length $description;
@@ -257,24 +231,50 @@ sub _process_file {
         $exif->SetNewValue('XMP:Subject', $tag, { AddValue => 1 });
     }
 
-    $phase = 'writing';
     my ($ok, $err) = $exif->WriteInfo($path);
     utime($atime, $mtime, $path) if $ok;
-    if ($ok) {
-        print "[xmp] written to $path\n";
-    } else {
-        warn "[error] ExifTool failed to write $path: $err\n";
-    }
 
-    _clear_inflight($path);
-
-    die "__TAGGER_CANCEL__\n" if $cancel_after_write;
+    return {
+        ok             => $ok ? 1 : 0,
+        err            => $err // '',
+        new_tags       => scalar(@new_tags),
+        existing_count => scalar(@$tags) - scalar(@new_tags),
+    };
 }
 
 sub _clear_inflight {
-    my ($path) = @_;
-    lock(%inflight);
-    delete $inflight{$path};
+    my ($self, $path) = @_;
+    delete $self->{inflight}{$path};
+    $self->_prune_last_written;
+}
+
+sub _prune_last_written {
+    my ($self) = @_;
+
+    my $cutoff = time() - $DEBOUNCE_SECS;
+    delete $self->{last_written}{$_}
+        for grep {
+            !$self->{inflight}{$_}
+                && $self->{last_written}{$_} < $cutoff
+        } keys %{ $self->{last_written} };
+}
+
+sub _resolve_drain_if_idle {
+    my ($self) = @_;
+    return unless $self->{draining} || $self->{cancel};
+    return if $self->{active};
+    return if @{ $self->{pending} };
+    $self->_resolve_drain;
+}
+
+sub _resolve_drain {
+    my ($self) = @_;
+
+    $self->{draining} = 0;
+
+    if (my $p = delete $self->{drain_promise}) {
+        $p->resolve;
+    }
 }
 
 1;
