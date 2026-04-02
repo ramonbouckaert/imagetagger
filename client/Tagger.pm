@@ -114,6 +114,7 @@ sub _process_file {
     printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
 
     my $exif     = Image::ExifTool->new();
+    $exif->Options(Preserve => 1);
     my $info     = $exif->ImageInfo($path, 'XMP:Subject');
     my $existing = $info->{'Subject'} // [];
     $existing    = [$existing] unless ref $existing eq 'ARRAY';
