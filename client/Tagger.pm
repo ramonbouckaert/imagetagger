@@ -124,7 +124,7 @@ sub _process_file {
     printf "[result] %d new tag(s) to add (skipping %d already present)\n",
         scalar(@new_tags), scalar(@tags) - scalar(@new_tags);
 
-    $exif->SetNewValue('XMP:Description', $description);
+    $exif->SetNewValue('XMP:Description', $description, { Lang => 'en' });
     for my $tag (@new_tags) {
         $exif->SetNewValue('XMP:Subject', $tag, { AddValue => 1 });
     }
