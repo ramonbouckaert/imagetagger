@@ -67,12 +67,12 @@ WORKDIR /app
 
 # ── cuSPARSELt ────────────────────────────────────────────────────────────────
 # Must be installed via .deb before torch, as the wheel depends on the shared libs.
-RUN wget -q https://developer.download.nvidia.com/compute/cusparselt/0.7.0/local_installers/cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb \
-    && dpkg -i cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb \
-    && cp /var/cusparselt-local-tegra-repo-ubuntu2204-0.7.0/cusparselt-*-keyring.gpg /usr/share/keyrings/ \
+RUN wget -q https://developer.download.nvidia.com/compute/cusparselt/0.9.0/local_installers/cusparselt-local-repo-ubuntu2204-0.9.0_0.9.0-1_arm64.deb \
+    && dpkg -i cusparselt-local-repo-ubuntu2204-0.9.0_0.9.0-1_arm64.deb \
+    && cp /var/cusparselt-local-repo-ubuntu2204-0.9.0/cusparselt-*-keyring.gpg /usr/share/keyrings/ \
     && apt-get update \
     && apt-get install -y --no-install-recommends libcusparselt0 libcusparselt-dev \
-    && rm -rf /var/lib/apt/lists/* cusparselt-local-tegra-repo-ubuntu2204-0.7.0_1.0-1_arm64.deb
+    && rm -rf /var/lib/apt/lists/* cusparselt-local-repo-ubuntu2204-0.9.0_0.9.0-1_arm64.deb
 
 # ── Virtual environment ────────────────────────────────────────────────────────
 RUN python3 -m venv /app/venv
@@ -82,8 +82,8 @@ ENV PATH=/app/venv/bin:$PATH
 # Same wheels as bare-metal install; built for JetPack 6 / CUDA 12.6 / Python 3.10.
 RUN pip install --no-cache-dir \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
-    torch==2.10.0 \
-    torchvision==0.25.0
+    torch==2.11.0 \
+    torchvision==0.26.0
 
 # ── Python dependencies ────────────────────────────────────────────────────────
 COPY src/requirements.txt .
@@ -92,6 +92,10 @@ RUN pip install --no-cache-dir --no-binary pillow -r requirements.txt
 # Install recognize-anything (RAM++) from GitHub — not on PyPI
 RUN pip install --no-cache-dir \
     git+https://github.com/xinyu1205/recognize-anything.git
+
+# Patch RAM++
+COPY patches/ram_bert.py /app/venv/lib/python3.10/site-packages/ram/models/bert.py
+COPY patches/ram_utils.py /app/venv/lib/python3.10/site-packages/ram/models/utils.py
 
 # ── Application ────────────────────────────────────────────────────────────────
 COPY src/server.py .

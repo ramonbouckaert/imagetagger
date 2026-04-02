@@ -16,12 +16,12 @@ pyvips         # fallback decoder for AVIF files with malformed EXIF metadata
 
 # RAM++ (recognize-anything) dependencies not pulled in automatically
 scipy
-fairscale==0.4.4
+fairscale>=0.4.4,<0.5.0
 
 # Florence-2 and SigLIP
 # Upper bound: Florence-2's remote config code accesses forced_bos_token_id
 # before parent __init__ sets it, which breaks on transformers >= 4.47.
-transformers>=4.40,<4.47
+transformers>=4.53
 timm
 einops        # required by Florence-2's vision encoder
 sentencepiece # required by SigLIP's tokenizer
@@ -30,7 +30,7 @@ safetensors   # required to load Florence-2 and SigLIP model weights
 accelerate    # used by transformers internals during model loading
 
 # NLP
-spacy==3.8.0
+spacy>=3.8.0
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # Production server

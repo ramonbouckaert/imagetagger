@@ -33,8 +33,7 @@ except ImportError as e:
     _import_errors.append(f"  • torch — {e}\n    Fix: {sys.executable} -m pip install torch torchvision")
 
 try:
-    from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer, AutoModelForTokenClassification
-    from transformers import SiglipModel, SiglipProcessor
+    from transformers import AutoProcessor, AutoModel, Florence2ForConditionalGeneration, AutoTokenizer, AutoModelForTokenClassification, AutoModelForSeq2SeqLM
     from transformers import pipeline as hf_pipeline
 except ImportError as e:
     _import_errors.append(
@@ -153,8 +152,8 @@ def _compile(model):
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
-SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip-so400m-patch14-384")
+FLORENCE_MODEL          = os.environ.get("FLORENCE_MODEL", "florence-community/Florence-2-large")
+SIGLIP_MODEL_ID         = os.environ.get("SIGLIP_MODEL", "google/siglip2-so400m-patch14-384")
 RAM_CHECKPOINT          = os.environ.get("RAM_CHECKPOINT", "ram_plus_swin_large_14m.pth")
 SPACY_MODEL             = os.environ.get("SPACY_MODEL", "en_core_web_sm")
 OCR_CORRECTION_MODEL_ID = os.environ.get("OCR_CORRECTION_MODEL", "yelpfeast/byt5-base-english-ocr-correction")
@@ -217,10 +216,10 @@ def load_florence_model() -> None:
     if not MODELS_AVAILABLE or not ENABLE_FLORENCE:
         return
     logger.info("Loading Florence-2 model (%s) on %s ...", FLORENCE_MODEL, DEVICE)
-    florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL, trust_remote_code=True)
+    florence_processor = AutoProcessor.from_pretrained(FLORENCE_MODEL)
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    florence_model = AutoModelForCausalLM.from_pretrained(
-                         FLORENCE_MODEL, trust_remote_code=True, torch_dtype=dtype,
+    florence_model = Florence2ForConditionalGeneration.from_pretrained(
+                         FLORENCE_MODEL, torch_dtype=dtype,
                      ).to(DEVICE)
     florence_model.eval()
     logger.info("Florence-2 model loaded.")
@@ -355,8 +354,8 @@ def load_siglip_model() -> None:
         return
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     logger.info("Loading SigLIP model (%s) on %s ...", SIGLIP_MODEL_ID, DEVICE)
-    siglip_processor = SiglipProcessor.from_pretrained(SIGLIP_MODEL_ID)
-    siglip_model     = SiglipModel.from_pretrained(SIGLIP_MODEL_ID, torch_dtype=dtype).to(DEVICE)
+    siglip_processor = AutoProcessor.from_pretrained(SIGLIP_MODEL_ID)
+    siglip_model     = AutoModel.from_pretrained(SIGLIP_MODEL_ID, torch_dtype=dtype).to(DEVICE)
     siglip_model.eval()
     with torch.no_grad():
         text_inputs = siglip_processor(
@@ -438,23 +437,22 @@ def get_ram_tags(pil_image: Image.Image, threshold: float) -> list[str]:
 
 # ── OCR spell correction ───────────────────────────────────────────────────────
 _ocr_correction_pipeline = None
+_ocr_correction_tokenizer = None
 
 
 def load_ocr_correction_model() -> None:
-    global _ocr_correction_pipeline
+    global _ocr_correction_pipeline, _ocr_correction_tokenizer
     if not MODELS_AVAILABLE or not ENABLE_OCR_CORRECTION:
         return
     logger.info("Loading OCR correction model (%s) on %s ...", OCR_CORRECTION_MODEL_ID, DEVICE)
-    device_id = 0 if DEVICE == "cuda" else -1
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
-    _ocr_correction_pipeline = hf_pipeline(
-        "text2text-generation",
-        model=OCR_CORRECTION_MODEL_ID,
-        device=device_id,
-        model_kwargs={"torch_dtype": dtype},
-    )
+    _ocr_correction_tokenizer = AutoTokenizer.from_pretrained(OCR_CORRECTION_MODEL_ID)
+    _ocr_correction_pipeline = AutoModelForSeq2SeqLM.from_pretrained(
+        OCR_CORRECTION_MODEL_ID,
+        torch_dtype=dtype,
+    ).to(DEVICE)
+    _ocr_correction_pipeline.eval()
     logger.info("OCR correction model loaded.")
-
 
 def correct_ocr_text(text: str) -> str:
     """Return spell-corrected version of OCR text; falls back to original on error."""
@@ -462,14 +460,15 @@ def correct_ocr_text(text: str) -> str:
     if _ocr_correction_pipeline is None or not text.strip():
         return text
     try:
-        tok = _ocr_correction_pipeline.tokenizer
-        token_count = len(tok(text)["input_ids"])
-        result = _ocr_correction_pipeline(
-            [text],
-            max_new_tokens=int(token_count * 1.1),
-            truncation=True,
-        )
-        corrected = result[0]["generated_text"].strip()
+        tok = _ocr_correction_tokenizer
+        inputs = tok(text, return_tensors="pt", truncation=True).to(DEVICE)
+        token_count = inputs["input_ids"].shape[1]
+        with torch.no_grad():
+            output_ids = _ocr_correction_pipeline.generate(
+                **inputs,
+                max_new_tokens=int(token_count * 1.1),
+            )
+        corrected = tok.decode(output_ids[0], skip_special_tokens=True).strip()
         logger.debug("OCR correction complete")
         return corrected
     except Exception:
@@ -713,7 +712,7 @@ def _report_devices() -> None:
     logger.info("  Florence-2 : %s", _device_of(ENABLE_FLORENCE, florence_model))
     logger.info("  SigLIP     : %s", _device_of(ENABLE_SIGLIP,   siglip_model))
     logger.info("  RAM++      : %s", _device_of(ENABLE_RAM,       ram_model))
-    logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline.model if _ocr_correction_pipeline is not None else None))
+    logger.info("  OCR-corr   : %s", _device_of(ENABLE_OCR_CORRECTION, _ocr_correction_pipeline))
     logger.info("  spaCy      : %s", "cpu" if spacy_nlp is not None else ("disabled" if not ENABLE_SPACY else "not loaded"))
     logger.info("=" * 56)
 
