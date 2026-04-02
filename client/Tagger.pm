@@ -18,10 +18,12 @@ my $DEBOUNCE_SECS = 5;
 sub new {
     my ($class, %args) = @_;
 
-    my $max_inflight       = $args{workers} // 8;
+    my $max_inflight       = $args{workers}            // 8;
     my $connect_timeout    = $args{connect_timeout}    // 5;
     my $inactivity_timeout = $args{inactivity_timeout} // 300;
     my $request_timeout    = $args{request_timeout}    // 0;
+    my $max_retries        = $args{max_retries}        // 5;
+    my $retry_backoff      = $args{retry_backoff}      // 1;
 
     my $ua = Mojo::UserAgent->new;
     $ua->connect_timeout($connect_timeout);
@@ -30,19 +32,22 @@ sub new {
     $ua->max_connections($max_inflight);
 
     my $self = bless {
-        endpoint          => $args{endpoint} // 'http://localhost:9100/analyse',
-        max_inflight      => $max_inflight,
-        ua                => $ua,
-        pending           => [],
-        active            => 0,
-        cancel            => 0,
-        draining          => 0,
-        drain_promise     => undef,
-        inflight          => {},
-        last_written      => {},
-        tx_by_path        => {},
-        conn_id_by_path   => {},
-        cancel_requested  => {},
+        endpoint         => $args{endpoint} // 'http://localhost:9100/analyse',
+        max_inflight     => $max_inflight,
+        max_retries      => $max_retries,
+        retry_backoff    => $retry_backoff,
+        ua               => $ua,
+        pending          => [],
+        active           => 0,
+        cancel           => 0,
+        draining         => 0,
+        drain_promise    => undef,
+        inflight         => {},
+        last_written     => {},
+        tx_by_path       => {},
+        conn_id_by_path  => {},
+        retry_wait_by_path => {},
+        cancel_requested => {},
     }, $class;
 
     return $self;
@@ -103,8 +108,17 @@ sub cancel {
         Mojo::IOLoop->remove($id) if defined $id;
     }
 
-    printf "[cancel] dropped %d queued job(s), aborting %d active HTTP request(s)\n",
-        scalar(@dropped), scalar(@active_http);
+    my @retry_waits = keys %{ $self->{retry_wait_by_path} };
+    for my $path (@retry_waits) {
+        $self->{cancel_requested}{$path} = 1;
+
+        my $wait = delete $self->{retry_wait_by_path}{$path} || {};
+        Mojo::IOLoop->remove($wait->{id}) if defined $wait->{id};
+        $wait->{resolve}->() if $wait->{resolve};
+    }
+
+    printf "[cancel] dropped %d queued job(s), aborting %d active HTTP request(s), cancelling %d retry wait(s)\n",
+        scalar(@dropped), scalar(@active_http), scalar(@retry_waits);
 
     if (!$self->{active}) {
         $self->_resolve_drain;
@@ -131,10 +145,11 @@ sub _pump {
                 my ($err) = @_;
                 $err = 'unknown error' unless defined $err;
                 chomp $err;
-                warn "[error] worker died on $path: $err\n";
+                warn "[error] request pipeline failed for $path: $err\n";
             })
             ->finally(sub {
                 $self->{active}--;
+                $self->_clear_request_state($path);
                 $self->_clear_inflight($path);
                 $self->_pump;
                 $self->_resolve_drain_if_idle;
@@ -148,6 +163,70 @@ sub _process_file_p {
     my ($self, $path) = @_;
 
     print "[upload] $path\n";
+
+    return $self->_request_with_retry_p($path, 0)
+        ->then(sub {
+            my ($res) = @_;
+
+            return unless $res;
+
+            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                print "[cancel] abandoning $path after request\n";
+                return;
+            }
+
+            my $data = eval { decode_json($res->body) };
+            if ($@) {
+                warn "[error] Could not parse JSON response for $path: $@\n";
+                return;
+            }
+
+            my $description = $data->{description} // '';
+            my @tags        = @{ $data->{tags} // [] };
+
+            printf "[result] description: %s\n", $description || '(none)';
+            printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
+
+            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
+                print "[cancel] skipping metadata write for $path\n";
+                return;
+            }
+
+            return $self->_write_metadata_p($path, $description, \@tags);
+        });
+}
+
+sub _request_with_retry_p {
+    my ($self, $path, $attempt) = @_;
+
+    return Mojo::Promise->resolve
+        ->then(sub {
+            return if $self->{cancel_requested}{$path} || $self->{cancel};
+            return $self->_start_request_p($path);
+        })
+        ->catch(sub {
+            my ($err) = @_;
+
+            return if $self->{cancel_requested}{$path} || $self->{cancel};
+
+            die $err unless $self->_should_retry_error($err, $attempt);
+
+            my $delay          = $self->{retry_backoff} * (2 ** $attempt);
+            my $next_attempt   = $attempt + 2;
+            my $total_attempts = $self->{max_retries} + 1;
+
+            warn "[retry] request failed for $path, retrying in ${delay}s (attempt $next_attempt/$total_attempts)\n";
+
+            return $self->_wait_before_retry_p($path, $delay)
+                ->then(sub {
+                    return if $self->{cancel_requested}{$path} || $self->{cancel};
+                    return $self->_request_with_retry_p($path, $attempt + 1);
+                });
+        });
+}
+
+sub _start_request_p {
+    my ($self, $path) = @_;
 
     my $tx = $self->{ua}->build_tx(
         POST => $self->{endpoint} => form => {
@@ -175,49 +254,38 @@ sub _process_file_p {
         ->then(sub {
             my ($tx) = @_;
 
-            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
-                print "[cancel] abandoning $path after request\n";
-                return;
-            }
+            return if $self->{cancel_requested}{$path} || $self->{cancel};
 
             my $res = eval { $tx->result };
             if (!$res) {
                 my $err = $@ || 'unknown transport error';
-                if ($self->{cancel_requested}{$path} || $self->{cancel}) {
-                    print "[cancel] request cancelled for $path\n";
-                    return;
-                }
                 die $err;
             }
 
-            unless ($res->is_success) {
-                my $status = defined $res->code ? $res->code : '(no status)';
-                my $msg    = $res->message // '';
-                warn "[error] Upload failed for $path: $status $msg\n";
+            return $res if $res->is_success;
 
-                my $body = $res->body;
-                warn "        $body\n" if defined $body && length $body;
-                return;
+            my $code = $res->code;
+            my $msg  = $res->message // '';
+            my $body = $res->body;
+
+            if (
+                defined $code
+                && (
+                    $res->is_server_error
+                    || $code == 408
+                    || $code == 425
+                    || $code == 429
+                )
+            ) {
+                warn "[warn] Upload failed for $path: $code $msg\n";
+                warn "       $body\n" if defined $body && length $body;
+                die "__RETRY_HTTP__:$code:$msg";
             }
 
-            my $data = eval { decode_json($res->body) };
-            if ($@) {
-                warn "[error] Could not parse JSON response for $path: $@\n";
-                return;
-            }
-
-            my $description = $data->{description} // '';
-            my @tags        = @{ $data->{tags} // [] };
-
-            printf "[result] description: %s\n", $description || '(none)';
-            printf "[result] tags (%d): %s\n", scalar(@tags), join(', ', @tags);
-
-            if ($self->{cancel_requested}{$path} || $self->{cancel}) {
-                print "[cancel] skipping metadata write for $path\n";
-                return;
-            }
-
-            return $self->_write_metadata_p($path, $description, \@tags);
+            my $status = defined $code ? $code : '(no status)';
+            warn "[error] Upload failed for $path: $status $msg\n";
+            warn "        $body\n" if defined $body && length $body;
+            return;
         })
         ->catch(sub {
             my ($err) = @_;
@@ -227,18 +295,59 @@ sub _process_file_p {
                 return;
             }
 
-            if (defined $err && $err =~ /Request timeout/) {
-                warn "[timeout] upload timed out for $path: $err\n";
-                return;
-            }
-
             die $err;
         })
         ->finally(sub {
-            delete $self->{tx_by_path}{$path};
             delete $self->{conn_id_by_path}{$path};
-            delete $self->{cancel_requested}{$path};
+            delete $self->{tx_by_path}{$path};
         });
+}
+
+sub _should_retry_error {
+    my ($self, $err, $attempt) = @_;
+
+    return 0 if $attempt >= $self->{max_retries};
+    return 0 if $self->{cancel};
+    return 0 unless defined $err && length $err;
+
+    return 1 if $err =~ /^__RETRY_HTTP__:/;
+
+    return 1 if $err =~ /Request timeout/i;
+    return 1 if $err =~ /Inactivity timeout/i;
+    return 1 if $err =~ /Connect timeout/i;
+    return 1 if $err =~ /Connection refused/i;
+    return 1 if $err =~ /Connection reset/i;
+    return 1 if $err =~ /Premature connection close/i;
+    return 1 if $err =~ /Broken pipe/i;
+    return 1 if $err =~ /Network is unreachable/i;
+    return 1 if $err =~ /Temporary failure in name resolution/i;
+    return 1 if $err =~ /Name or service not known/i;
+
+    return 0;
+}
+
+sub _wait_before_retry_p {
+    my ($self, $path, $delay) = @_;
+
+    my $p     = Mojo::Promise->new;
+    my $state = { done => 0 };
+
+    my $resolve = sub {
+        return if $state->{done}++;
+        $p->resolve;
+    };
+
+    my $id = Mojo::IOLoop->timer($delay => sub {
+        delete $self->{retry_wait_by_path}{$path};
+        $resolve->();
+    });
+
+    $self->{retry_wait_by_path}{$path} = {
+        id      => $id,
+        resolve => $resolve,
+    };
+
+    return $p;
 }
 
 sub _write_metadata_p {
@@ -298,6 +407,20 @@ sub _write_metadata_sync {
         new_tags       => scalar(@new_tags),
         existing_count => scalar(@$tags) - scalar(@new_tags),
     };
+}
+
+sub _clear_request_state {
+    my ($self, $path) = @_;
+
+    delete $self->{tx_by_path}{$path};
+    delete $self->{conn_id_by_path}{$path};
+
+    if (my $wait = delete $self->{retry_wait_by_path}{$path}) {
+        Mojo::IOLoop->remove($wait->{id}) if defined $wait->{id};
+        $wait->{resolve}->() if $wait->{resolve};
+    }
+
+    delete $self->{cancel_requested}{$path};
 }
 
 sub _clear_inflight {
