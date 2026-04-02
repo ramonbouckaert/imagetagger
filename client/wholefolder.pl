@@ -11,7 +11,7 @@ use Tagger;
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 my $endpoint = $ENV{TAGGER_ENDPOINT} // 'http://localhost:9100/analyse';
-my $workers  = 32;
+my $workers  = 5;
 my $help;
 
 GetOptions(
@@ -36,7 +36,7 @@ the imagetagger API, writing results back as XMP metadata using ExifTool.
 Options:
   --endpoint=URL    Imagetagger API endpoint
                     (default: \$TAGGER_ENDPOINT env var, or http://localhost:9100/analyse)
-  --workers=N       Number of concurrent upload workers (default: 32)
+  --workers=N       Number of concurrent upload workers (default: 5)
   --help            Show this help
 
 END

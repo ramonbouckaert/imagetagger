@@ -18,7 +18,7 @@ my $DEBOUNCE_SECS = 5;
 sub new {
     my ($class, %args) = @_;
 
-    my $max_inflight       = $args{workers}            // 8;
+    my $max_inflight       = $args{workers}            // 5;
     my $connect_timeout    = $args{connect_timeout}    // 5;
     my $inactivity_timeout = $args{inactivity_timeout} // 300;
     my $request_timeout    = $args{request_timeout}    // 0;
