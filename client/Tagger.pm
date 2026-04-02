@@ -32,10 +32,18 @@ sub new {
     return $self;
 }
 
-# Enqueue a file path. Silently ignores non-AVIF paths.
+# Enqueue a file path. Silently ignores non-AVIF paths and debounced files.
 sub enqueue {
     my ($self, $path) = @_;
     return unless $path =~ /\.avif$/i;
+    {
+        lock(%last_written);
+        if (exists $last_written{$path} && (time() - $last_written{$path}) < $DEBOUNCE_SECS) {
+            print "[skip] $path (debounce)\n";
+            return;
+        }
+        $last_written{$path} = time();
+    }
     $self->{queue}->enqueue($path);
     printf "[queued] %s (pending: %d)\n", $path, $self->{queue}->pending();
 }
@@ -52,7 +60,7 @@ sub drain {
 
 sub _worker {
     my ($self) = @_;
-    my $ua = LWP::UserAgent->new(timeout => 300);
+    my $ua = LWP::UserAgent->new(timeout => 300, keep_alive => 0);
     while (defined(my $path = $self->{queue}->dequeue())) {
         $self->_process_file($path, $ua);
     }
@@ -70,15 +78,6 @@ sub _cleaner {
 
 sub _process_file {
     my ($self, $path, $ua) = @_;
-
-    {
-        lock(%last_written);
-        if (exists $last_written{$path} && (time() - $last_written{$path}) < $DEBOUNCE_SECS) {
-            print "[skip] $path (debounce)\n";
-            return;
-        }
-        $last_written{$path} = time();
-    }
 
     print "[upload] $path\n";
 
