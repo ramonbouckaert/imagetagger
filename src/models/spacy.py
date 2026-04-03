@@ -110,6 +110,18 @@ class SpacyModel:
                 start = min(t.i for t in token.subtree)
                 if start > sent.start:
                     break_points.add(start)
+            elif token.text in (':', ';') and token.i + 1 < sent.end:
+                if token.text == ';':
+                    break_points.add(token.i + 1)
+                else:
+                    prev_tok = sent.doc[token.i - 1] if token.i > sent.start else None
+                    next_tok = sent.doc[token.i + 1]
+                    is_time = (
+                        prev_tok is not None and prev_tok.text.isdigit()
+                        and next_tok.text.isdigit()
+                    )
+                    if not is_time:
+                        break_points.add(token.i + 1)
 
         boundaries = sorted([sent.start] + list(break_points) + [sent.end])
         for i in range(len(boundaries) - 1):
