@@ -61,7 +61,7 @@ def _normalise_tag(tag: str) -> list[str]:
     for i, token in enumerate(tokens):
         if "/" in token:
             return [t for alt in token.split("/") for t in _normalise_tag(" ".join(tokens[:i] + [alt] + tokens[i+1:]))]
-    tag = re.sub(r'^(only|just|possibly|probably|likely)\s+', '', tag)
+    tag = re.sub(r'^(only|just|possibly|probably|likely|specifically)\s+', '', tag)
     tag = re.sub(r'^(a|the)\s+', '', tag)
     tag = re.sub(r'^(one|same|more|few|fewer|less|several|various|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
