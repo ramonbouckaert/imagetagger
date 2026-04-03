@@ -1,10 +1,24 @@
 import logging
-import re
 import traceback
 
-_CLAUSE_SPLIT_RE = re.compile(r',\s*(?:so|but|and|or|because|although|though|while|since|if|when|as)\b', re.IGNORECASE)
-
 logger = logging.getLogger(__name__)
+
+_CLAUSE_DEPS = frozenset({'advcl', 'ccomp', 'xcomp', 'relcl', 'conj', 'acl'})
+
+
+def _clause_spans(sent):
+    """Split a spaCy sentence into clause-level spans using the dependency tree.
+    Finds subordinate clause roots and splits at the start of each clause's subtree."""
+    break_points = set()
+    for token in sent:
+        if token.dep_ in _CLAUSE_DEPS and token.pos_ in ('VERB', 'AUX'):
+            start = min(t.i for t in token.subtree)
+            if start > sent.start:
+                break_points.add(start)
+
+    boundaries = sorted([sent.start] + list(break_points) + [sent.end])
+    for i in range(len(boundaries) - 1):
+        yield sent.doc[boundaries[i]:boundaries[i + 1]]
 
 _CAPTION_BLOCKLIST = {
     "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you",
@@ -97,16 +111,10 @@ class SpacyModel:
             tags: list[str] = []
             for doc in self._nlp.pipe(texts):
                 for sent in doc.sents:
-                    t = sent.text.strip()
-                    if not t:
-                        continue
-                    if len(sent) <= 12:
-                        tags.append(t.strip('.,!?;:\'"').strip().lower())
-                    else:
-                        for clause in _CLAUSE_SPLIT_RE.split(t):
-                            clause = clause.strip().strip('.,!?;:\'"').strip()
-                            if clause and len(clause.split()) <= 12:
-                                tags.append(clause.lower())
+                    for clause in _clause_spans(sent):
+                        t = clause.text.strip().strip('.,!?;:\'"').strip()
+                        if t and len(clause) <= 12:
+                            tags.append(t.lower())
             logger.debug("spaCy sentence splitting complete: %s", tags)
             return tags
         except Exception:
