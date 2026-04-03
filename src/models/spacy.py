@@ -88,6 +88,19 @@ class SpacyModel:
     _CLAUSE_DEPS = frozenset({'advcl', 'conj'})
 
     @staticmethod
+    def _strip_connectives(clause):
+        """Strip leading subordinating/coordinating conjunctions and trailing conjunctions from a clause span."""
+        tokens = list(clause)
+        while tokens and tokens[0].pos_ in ('CCONJ', 'SCONJ'):
+            tokens = tokens[1:]
+        while tokens and tokens[-1].pos_ in ('CCONJ',):
+            tokens = tokens[:-1]
+        if not tokens:
+            return '', 0
+        text = clause.doc[tokens[0].i:tokens[-1].i + 1].text
+        return text, len(tokens)
+
+    @staticmethod
     def _clause_spans(sent):
         """Split a spaCy sentence into clause-level spans using the dependency tree.
         Finds subordinate clause roots and splits at the start of each clause's subtree."""
@@ -113,8 +126,9 @@ class SpacyModel:
             for doc in self._nlp.pipe(texts):
                 for sent in doc.sents:
                     for clause in self._clause_spans(sent):
-                        t = clause.text.strip().strip('.,!?;:\'"').strip()
-                        if t and len(clause) <= 20:
+                        t, n = self._strip_connectives(clause)
+                        t = t.strip().strip('.,!?;:\'"').strip()
+                        if t and n <= 20:
                             tags.append(t.lower())
             logger.debug("spaCy sentence splitting complete: %s", tags)
             return tags
