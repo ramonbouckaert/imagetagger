@@ -50,8 +50,8 @@ def _open_image(data: bytes) -> Image.Image:
 
 
 def _normalise_tag(tag: str) -> list[str]:
-    """Lowercase, strip leading articles, fix known typos. Returns 0–n tags."""
-    tag = tag.lower().strip()
+    """Lowercase, strip leading articles, strip undescriptive text, strip some punctuation, break apart some tags, fix known typos. Returns 0–n tags."""
+    tag = tag.lower().strip().replace(',', '').replace(';', '')
     tag = ' '.join(w for w in tag.split() if any(c.isalnum() for c in w) and not w.startswith("'"))
     parts = tag.split(" or ")
     if len(parts) > 1:
