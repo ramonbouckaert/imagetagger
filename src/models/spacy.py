@@ -1,5 +1,8 @@
 import logging
+import re
 import traceback
+
+_CLAUSE_SPLIT_RE = re.compile(r',\s*(?:so|but|and|or|because|although|though|while|since|if|when|as)\b', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +98,15 @@ class SpacyModel:
             for doc in self._nlp.pipe(texts):
                 for sent in doc.sents:
                     t = sent.text.strip()
-                    if t and len(sent) <= 12:
+                    if not t:
+                        continue
+                    if len(sent) <= 12:
                         tags.append(t.strip('.,!?;:\'"').strip().lower())
+                    else:
+                        for clause in _CLAUSE_SPLIT_RE.split(t):
+                            clause = clause.strip().strip('.,!?;:\'"').strip()
+                            if clause and len(clause.split()) <= 12:
+                                tags.append(clause.lower())
             logger.debug("spaCy sentence splitting complete: %s", tags)
             return tags
         except Exception:

@@ -407,8 +407,8 @@ sub _write_metadata_sync {
     my @new_tags = grep { !$existing_lc{lc($_)} } @$tags;
 
     if (length $description) {
-        $exif->SetNewValue('XMP-dc:Description-en', $description);
         $exif->SetNewValue('XMP-dc:Description-x-default', $description);
+        $exif->SetNewValue('XMP-dc:Description-en', $description);
     }
 
     for my $tag (@new_tags) {
