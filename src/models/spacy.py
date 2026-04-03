@@ -85,7 +85,7 @@ class SpacyModel:
             logger.error("spaCy noun extraction failed:\n%s", traceback.format_exc())
             return []
 
-    _CLAUSE_DEPS = frozenset({'advcl', 'ccomp', 'xcomp', 'relcl', 'conj', 'acl'})
+    _CLAUSE_DEPS = frozenset({'advcl', 'conj'})
 
     @staticmethod
     def _clause_spans(sent):

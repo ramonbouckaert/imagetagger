@@ -64,7 +64,6 @@ def _normalise_tag(tag: str) -> list[str]:
     tag = re.sub(r'^(a|the)\s+', '', tag)
     tag = re.sub(r'^(one|same|more|few|fewer|less|several|various|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+', '', tag)
     tag = _TYPO_CORRECTIONS.get(tag, tag)
-    tag = " ".join(t for t in tag.split() if sum(c.isalnum() for c in t) >= 3)
     if not tag or len(tag) < 3:
         return []
     if tag.startswith("human "):
