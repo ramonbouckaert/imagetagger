@@ -104,7 +104,7 @@ class SpacyModel:
 
     def sentence_tags(self, texts: list[str]) -> list[str]:
         """Split each text into sentences independently and return each as a lowercased tag.
-        Sentences over 12 words are discarded."""
+        Sentences over 20 tokens are discarded."""
         logger.debug("spaCy sentence splitting started")
         if not self.is_ready() or not texts:
             return []
@@ -114,7 +114,7 @@ class SpacyModel:
                 for sent in doc.sents:
                     for clause in self._clause_spans(sent):
                         t = clause.text.strip().strip('.,!?;:\'"').strip()
-                        if t and len(clause) <= 12:
+                        if t and len(clause) <= 20:
                             tags.append(t.lower())
             logger.debug("spaCy sentence splitting complete: %s", tags)
             return tags
