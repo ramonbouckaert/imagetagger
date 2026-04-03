@@ -22,8 +22,7 @@ sub new {
     my $connect_timeout    = $args{connect_timeout}    // 5;
     my $inactivity_timeout = $args{inactivity_timeout} // 300;
     my $request_timeout    = $args{request_timeout}    // 0;
-    my $max_retries        = $args{max_retries}        // 5;
-    my $retry_backoff      = $args{retry_backoff}      // 1;
+    my $max_retries        = $args{max_retries}        // 6;
 
     my $ua = Mojo::UserAgent->new;
     $ua->connect_timeout($connect_timeout);
@@ -35,7 +34,6 @@ sub new {
         endpoint         => $args{endpoint} // 'http://localhost:9100/analyse',
         max_inflight     => $max_inflight,
         max_retries      => $max_retries,
-        retry_backoff    => $retry_backoff,
         ua               => $ua,
         pending          => [],
         active           => 0,
@@ -226,7 +224,7 @@ sub _request_with_retry_p {
 
             die $err unless $self->_should_retry_error($err, $attempt);
 
-            my $delay          = $self->{retry_backoff} * (2 ** $attempt);
+            my $delay          = 3 ** $attempt;
             my $next_attempt   = $attempt + 2;
             my $total_attempts = $self->{max_retries} + 1;
 
@@ -366,7 +364,8 @@ sub _wait_before_retry_p {
 }
 
 sub _write_metadata_p {
-    my ($self, $path, $description, $tags) = @_;
+    my ($self, $path, $description, $tags, $attempt) = @_;
+    $attempt //= 0;
 
     return Mojo::IOLoop->subprocess->run_p(sub {
         return _write_metadata_sync($path, $description, $tags);
@@ -378,15 +377,28 @@ sub _write_metadata_p {
         my $new_tags       = $result->{new_tags}       // 0;
         my $existing_count = $result->{existing_count} // 0;
 
-        printf "[result] %d new tag(s) to add (skipping %d already present)\n",
-            $new_tags, $existing_count;
-
         if ($ok) {
+            printf "[result] %d new tag(s) to add (skipping %d already present)\n",
+                $new_tags, $existing_count;
             print "[xmp] written to $path\n";
-        } else {
-            warn "[error] ExifTool failed to write $path: $err\n";
+            return;
         }
 
+        return if $self->{cancel_requested}{$path} || $self->{cancel};
+
+        if ($attempt < $self->{max_retries}) {
+            my $delay        = 3 ** $attempt;
+            my $next_attempt = $attempt + 2;
+            my $total        = $self->{max_retries} + 1;
+            warn "[retry] ExifTool write failed for $path ($err), retrying in ${delay}s (attempt $next_attempt/$total)\n";
+            return $self->_wait_before_retry_p($path, $delay)
+                ->then(sub {
+                    return if $self->{cancel_requested}{$path} || $self->{cancel};
+                    return $self->_write_metadata_p($path, $description, $tags, $attempt + 1);
+                });
+        }
+
+        warn "[error] ExifTool failed to write $path: $err\n";
         return;
     });
 }
