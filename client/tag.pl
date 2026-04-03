@@ -22,16 +22,20 @@ GetOptions(
 
 if ($help) { print usage(); exit 0; }
 
-my $dir = shift @ARGV or die usage();
-$dir =~ s{/+$}{};
-die "Directory does not exist: $dir\n" unless -d $dir;
+@ARGV or die usage();
 
 sub usage {
     return <<END;
-Usage: $0 [options] DIR
+Usage: $0 [options] PATTERN [PATTERN ...]
 
-Queues every AVIF file in DIR (and immediate subdirectories) for tagging via
-the imagetagger API, writing results back as XMP metadata using ExifTool.
+Tags AVIF files matching the given glob pattern(s), writing results back
+as XMP metadata using ExifTool. Quote patterns to let Perl expand them
+rather than the shell (useful for recursive globs).
+
+Examples:
+  $0 /photos/*.avif
+  $0 '/photos/**/*.avif'
+  $0 /photos/2024/*.avif /photos/2025/*.avif
 
 Options:
   --endpoint=URL    Imagetagger API endpoint
@@ -63,25 +67,13 @@ $SIG{INT} = $SIG{TERM} = sub {
     exit 0;
 };
 
-sub enqueue_dir {
-    my ($d) = @_;
-    return if $shutting_down;
-    for my $file (glob("$d/*.avif"), glob("$d/*.AVIF")) {
+for my $pattern (@ARGV) {
+    last if $shutting_down;
+    for my $file (glob($pattern)) {
         last if $shutting_down;
         $tagger->enqueue($file);
     }
 }
-
-enqueue_dir($dir);
-
-opendir(my $dh, $dir) or die "Cannot open '$dir': $!\n";
-while (my $entry = readdir($dh)) {
-    last if $shutting_down;
-    next if $entry =~ /^\./;
-    my $subdir = "$dir/$entry";
-    enqueue_dir($subdir) if -d $subdir;
-}
-closedir($dh);
 
 if (!$shutting_down) {
     printf "Queued files, waiting for %d workers to finish...\n", $workers;

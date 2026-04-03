@@ -53,9 +53,24 @@ sub new {
     return $self;
 }
 
+sub _is_avif {
+    my ($path) = @_;
+    open(my $fh, '<:raw', $path) or return 0;
+    my $header;
+    my $n = read($fh, $header, 12);
+    close($fh);
+    return 0 unless defined $n && $n == 12;
+    return substr($header, 4, 4) eq 'ftyp'
+        && substr($header, 8, 4) =~ /\Aavi[fsc]\z/;
+}
+
 sub enqueue {
     my ($self, $path) = @_;
-    return unless $path =~ /\.avif$/i;
+    return unless -f $path;
+    unless (_is_avif($path)) {
+        print "[skip] $path (not an AVIF)\n";
+        return;
+    }
     return if $self->{cancel};
 
     $self->_prune_last_written;
