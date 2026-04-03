@@ -162,7 +162,7 @@ class AnalysisController:
 
         florence_result = florence_future.result()
         cap = florence_result.description
-        cap_quotes = [q for q in re.findall(r'["\u201c]([^"\u201c\u201d]+)["\u201d]', cap) if q and q[0].isalnum() and len(q) <= 1000]
+        cap_quotes = [q for q in re.findall(r'["\u201c](\w[^"\u201c\u201d]*)["\u201d]', cap) if len(q) <= 1000]
 
         # ── Phase 2: OCR correction + caption spaCy (overlapping) ─────────────
         ocr_future = self._ocr_correction.correct(florence_result.ocr_raw, cancel)
