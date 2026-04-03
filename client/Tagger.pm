@@ -66,12 +66,12 @@ sub _is_avif {
 
 sub enqueue {
     my ($self, $path) = @_;
+    return if $self->{cancel};
     return unless -f $path;
     unless (_is_avif($path)) {
         print "[skip] $path (not an AVIF)\n";
         return;
     }
-    return if $self->{cancel};
 
     $self->_prune_last_written;
 
