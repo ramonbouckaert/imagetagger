@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 _CAPTION_BLOCKLIST = {
     "that", "they", "another", "foreground", "background", "left", "right", "top", "bottom", "something", "you",
     "overall", "which", "type", "them", "image", "him", "her", "he", "she", "this", "anything", "side", "who",
-    "themself", "themselves", "other", "others", "atmosphere", "mood", "scene", "setting"
+    "themself", "themselves", "other", "others", "atmosphere", "mood", "scene", "setting", "some", "whom"
 }
 _OCR_BLOCKLIST = {
     "that", "they", "another", "something", "you", "which", "them", "him", "her", "he", "she", "this",
