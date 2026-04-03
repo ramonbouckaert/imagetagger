@@ -72,6 +72,64 @@ def _normalise_tag(tag: str) -> list[str]:
         return [tag, suffix] if len(suffix) >= 3 else [tag]
     return [tag]
 
+def _extract_quoted_strings(text: str, max_len: int = 1000) -> list[str]:
+    def ns(i: int, step: int):
+        i += step
+        while 0 <= i < len(text) and text[i].isspace():
+            i += step
+        return text[i] if 0 <= i < len(text) else None
+
+    def escaped(i: int) -> bool:
+        n = 0
+        i -= 1
+        while i >= 0 and text[i] == "\\":
+            n += 1
+            i -= 1
+        return n % 2 == 1
+
+    out, stack = [], []
+
+    for i, ch in enumerate(text):
+        if ch == "\u201c":
+            stack.append(("\u201c", i + 1))
+        elif ch == "\u201d":
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j][0] == "\u201c":
+                    _, start = stack.pop(j)
+                    q = text[start:i].strip()
+                    if q and len(q) <= max_len and re.match(r"\w", q):
+                        out.append(q)
+                    break
+        elif ch == '"' and not escaped(i):
+            prev_raw = text[i - 1] if i > 0 else None
+            next_raw = text[i + 1] if i + 1 < len(text) else None
+            prev_ns, next_ns = ns(i, -1), ns(i, 1)
+
+            openish = (
+                prev_raw is None
+                or prev_raw.isspace()
+                or prev_ns in '([{-–—/:;\u201c'
+            )
+            closeish = (
+                next_raw is None
+                or next_raw.isspace()
+                or next_ns in '.,!?;:)]}>\u201d'
+            )
+
+            if openish and not closeish:
+                stack.append(('"', i + 1))
+            elif closeish or any(q == '"' for q, _ in stack):
+                for j in range(len(stack) - 1, -1, -1):
+                    if stack[j][0] == '"':
+                        _, start = stack.pop(j)
+                        q = text[start:i].strip()
+                        if q and len(q) <= max_len and re.match(r"\w", q):
+                            out.append(q)
+                        break
+            else:
+                stack.append(('"', i + 1))
+
+    return out
 
 class AnalysisController:
     """
@@ -162,7 +220,7 @@ class AnalysisController:
 
         florence_result = florence_future.result()
         cap = florence_result.description
-        cap_quotes = [q for q in re.findall(r'["\u201c](\w[^"\u201c\u201d]*)["\u201d]', cap) if len(q) <= 1000]
+        cap_quotes = _extract_quoted_strings(cap)
 
         # ── Phase 2: OCR correction + caption spaCy (overlapping) ─────────────
         ocr_future = self._ocr_correction.correct(florence_result.ocr_raw, cancel)
