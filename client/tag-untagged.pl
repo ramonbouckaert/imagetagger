@@ -60,7 +60,19 @@ sub has_keywords {
 
 # ── Enqueue files ──────────────────────────────────────────────────────────────
 
-my $tagger = Tagger->new(endpoint => $endpoint, workers => $workers);
+my $tagger = Tagger->new(
+    endpoint   => $endpoint,
+    workers    => $workers,
+    on_failure => sub {
+        my ($path) = @_;
+        if (open(my $fh, '>>', 'imagetagger-failures.txt')) {
+            print $fh "$path\n";
+            close($fh);
+        } else {
+            warn "Cannot open imagetagger-failures.txt: $!\n";
+        }
+    },
+);
 
 my $shutting_down = 0;
 

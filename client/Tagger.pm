@@ -23,6 +23,7 @@ sub new {
     my $inactivity_timeout = $args{inactivity_timeout} // 300;
     my $request_timeout    = $args{request_timeout}    // 0;
     my $max_retries        = $args{max_retries}        // 6;
+    my $on_failure         = $args{on_failure};
 
     my $ua = Mojo::UserAgent->new;
     $ua->connect_timeout($connect_timeout);
@@ -34,6 +35,7 @@ sub new {
         endpoint         => $args{endpoint} // 'http://localhost:9100/analyse',
         max_inflight     => $max_inflight,
         max_retries      => $max_retries,
+        on_failure       => $on_failure,
         ua               => $ua,
         pending          => [],
         active           => 0,
@@ -159,6 +161,7 @@ sub _pump {
                 $err = 'unknown error' unless defined $err;
                 chomp $err;
                 warn "[error] request pipeline failed for $path: $err\n";
+                $self->{on_failure}->($path) if $self->{on_failure};
             })
             ->finally(sub {
                 $self->{active}--;
@@ -190,8 +193,7 @@ sub _process_file_p {
 
             my $data = eval { decode_json($res->body) };
             if ($@) {
-                warn "[error] Could not parse JSON response for $path: $@\n";
-                return;
+                die "Could not parse JSON response: $@";
             }
 
             my $description = $data->{description} // '';
@@ -399,6 +401,7 @@ sub _write_metadata_p {
         }
 
         warn "[error] ExifTool failed to write $path: $err\n";
+        $self->{on_failure}->($path) if $self->{on_failure};
         return;
     });
 }
