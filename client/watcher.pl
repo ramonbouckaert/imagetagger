@@ -98,7 +98,7 @@ sub schedule_enqueue {
         Mojo::IOLoop->remove($id);
     }
 
-    $enqueue_timers{$path} = Mojo::IOLoop->timer(5 => sub {
+    $enqueue_timers{$path} = Mojo::IOLoop->timer(1 => sub {
         delete $enqueue_timers{$path};
 
         return if $shutting_down;
