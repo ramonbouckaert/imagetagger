@@ -13,7 +13,7 @@ $| = 1;
 binmode STDOUT, ':encoding(UTF-8)';
 binmode STDERR, ':encoding(UTF-8)';
 
-my $DEBOUNCE_SECS = 5;
+my $DEBOUNCE_SECS = 10;
 
 sub new {
     my ($class, %args) = @_;
