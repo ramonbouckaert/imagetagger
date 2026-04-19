@@ -64,7 +64,7 @@ my $tagger = Tagger->new(
     },
 );
 
-my $shutting_down   = 0;
+my $shutting_down    = 0;
 my $shutdown_started = 0;
 
 my $inotify = Linux::Inotify2->new()
@@ -73,6 +73,7 @@ my $inotify = Linux::Inotify2->new()
 $inotify->blocking(0);
 
 my %watches;
+my %enqueue_timers;
 my $inotify_fh = $inotify->fh;
 my $reactor    = Mojo::IOLoop->singleton->reactor;
 
@@ -85,6 +86,26 @@ sub unwatch_dir {
     my ($dir) = @_;
     delete $watches{$dir};
     print "Stopped watching $dir\n";
+}
+
+sub schedule_enqueue {
+    my ($path) = @_;
+
+    return if $shutting_down;
+    return unless $path =~ /\.AVIF\z/i;
+
+    if (my $id = delete $enqueue_timers{$path}) {
+        Mojo::IOLoop->remove($id);
+    }
+
+    $enqueue_timers{$path} = Mojo::IOLoop->timer(5 => sub {
+        delete $enqueue_timers{$path};
+
+        return if $shutting_down;
+        return unless -f $path;
+
+        $tagger->enqueue($path);
+    });
 }
 
 sub watch_dir {
@@ -119,8 +140,8 @@ sub watch_dir {
                 return;
             }
 
-            if (($event->IN_CLOSE_WRITE || $event->IN_MOVED_TO) && $path =~ /\.AVIF\z/i) {
-                $tagger->enqueue($path);
+            if ($event->IN_CLOSE_WRITE || $event->IN_MOVED_TO) {
+                schedule_enqueue($path);
             }
         },
     );
@@ -167,6 +188,11 @@ sub begin_shutdown {
     $shutdown_started = 1;
 
     $reactor->remove($inotify_fh);
+
+    for my $id (values %enqueue_timers) {
+        Mojo::IOLoop->remove($id);
+    }
+    %enqueue_timers = ();
 
     eval { $tagger->cancel(); 1 }
         or warn "[error] cancel failed: $@\n";
