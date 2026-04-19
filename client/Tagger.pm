@@ -430,11 +430,14 @@ sub _write_metadata_sync {
         $exif->SetNewValue('XMP:Subject', $tag, { AddValue => 1 });
     }
 
-    my ($ok, $err) = $exif->WriteInfo($path);
-    utime($atime, $mtime, $path) if $ok;
+    my $status  = $exif->WriteInfo($path);
+    my $err     = $exif->GetValue('Error')   // '';
+    my $warning = $exif->GetValue('Warning') // '';
+
+    utime($atime, $mtime, $path) if $status;
 
     return {
-        ok             => $ok ? 1 : 0,
+        ok             => ($status == 1 || $status == 2) ? 1 : 0,
         err            => $err // '',
         new_tags       => scalar(@new_tags),
         existing_count => scalar(@$tags) - scalar(@new_tags),
