@@ -412,7 +412,7 @@ sub _write_metadata_sync {
     my ($atime, $mtime) = (stat($path))[8, 9];
 
     my $exif = Image::ExifTool->new();
-    $exif->Options(Lang => 'en', Preserve => 1);
+    $exif->Options(Lang => 'en', Preserve => 1, IgnoreMinorErrors => 1);
 
     my $info     = $exif->ImageInfo($path, 'XMP:Subject');
     my $existing = $info->{'Subject'} // [];
@@ -434,11 +434,14 @@ sub _write_metadata_sync {
     my $err     = $exif->GetValue('Error')   // '';
     my $warning = $exif->GetValue('Warning') // '';
 
-    utime($atime, $mtime, $path) if $status;
+    my $is_minor = $err =~ /\[minor\]/i;
+    my $ok       = ($status == 1 || $status == 2 || $is_minor) ? 1 : 0;
+
+    utime($atime, $mtime, $path) if $ok;
 
     return {
-        ok             => ($status == 1 || $status == 2) ? 1 : 0,
-        err            => $err // '',
+        ok             => $ok,
+        err            => $is_minor ? '' : $err,
         new_tags       => scalar(@new_tags),
         existing_count => scalar(@$tags) - scalar(@new_tags),
     };
