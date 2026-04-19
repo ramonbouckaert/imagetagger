@@ -119,7 +119,7 @@ sub watch_dir {
                 return;
             }
 
-            if ($event->IN_CLOSE_WRITE || $event->IN_MOVED_TO) {
+            if (($event->IN_CLOSE_WRITE || $event->IN_MOVED_TO) && $path =~ /\.AVIF\z/i) {
                 $tagger->enqueue($path);
             }
         },
